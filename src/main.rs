@@ -25,6 +25,7 @@ fn main() {
     let mut home_dir = None;
     let mut userdel = true;
     let mut userhomedel = false;
+    let mut noconfcmd = false;
     loop {
         let arg = args.next();
         if let Some(arg) = arg {
@@ -37,6 +38,7 @@ fn main() {
                 Some('-') => match match arg[1..].split_once('=') { Some(v) => (v.0, Some(v.1)), None => (&arg[1..], None) } {
                     ("nouserdel", _) => userdel = false,
                     ("userhomedel", _) => userhomedel = true,
+                    ("noconfcmd", _) => noconfcmd = true,
                     _ => println!("Ignoring unknown argument '{arg}'."),
                 },
                 _ => (),
@@ -57,7 +59,7 @@ fn main() {
                         (_, Some((what, args))) => { // do something
                             match what {
                                 // run [something] adds [something] to the args for doas. The first one is the program to be executed, anything following that are args for that program: 'doas -u [user] -- [run...]'
-                                "run" => run.push(args.to_string()),
+                                "run" => if ! noconfcmd { run.push(args.to_string()) },
                                 // init is a command that will be executed WITH THIS PROGRAMS PERMISSIONS, NOT AS THE 'd26r...' USER! BE CAREFUL WITH THIS!
                                 "init!" => init.push((true, vec![args.to_string()])),
                                 "init_" => init.push((false, vec![args.to_string()])), // non-fatal
