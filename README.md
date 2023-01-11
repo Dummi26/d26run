@@ -26,7 +26,7 @@ Options:
 - C[count]
 - n[name]
 - h[home dir]
-- -[nouserdel, userhomedel]
+- -[nouserdel, userhomedel, noconfcmd]
 
 For example, to launch thunar in /tmp from a new user:
 
