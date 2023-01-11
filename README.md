@@ -48,7 +48,7 @@ To use it, run:
 
 A config *can* specify the following things:
 
-- run: the command that should be run as the new user.
+- run: the command that should be run as the new user (and it's arguments: the first run specifies the executable, all others are used as arguments for the program)
 - init!: a command that should be run as the user executing d26run (most likely root). This can be used to, for example, add the newly created user to some groups you wish to use.
 - init_: like init!, but a nonzero exit status is not fatal. Use this for things like mkdir if the directory might already exist.
 - init+: Adds an argument to the most recent init[!_] command. (See examples)
@@ -81,6 +81,7 @@ Empty lines and lines starting with # will be ignored. Use # for comments.
     home /home/d26r/[d26%name]
 
     run obs
+    run --startreplaybuffer
 
     init_ usermod
     init+ -G
