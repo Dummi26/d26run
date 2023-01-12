@@ -1,0 +1,31 @@
+# Example config showcasing the new basic scripting system
+
+# say whether or not any args were provided using -cfgarg
+ empty = empty : args
+ args yes =:args were provided
+ args no =:no args were provided
+ print = if : empty : args no : args yes
+ print: print
+if ! empty
+ args count = length : args
+ print1 =:Found 
+ print2 = to_string : args count
+ print3 =: args.
+ print_f = print1 + print2 + print3
+ print : print_f
+end
+
+# add two more args because why not
+ arg1 =:another arg
+ arg2 =:yet another argument
+ new_args = list : arg1 : arg2
+ args = args + new_args
+
+# print the args
+ args_count = 0
+ action1 =:args_count = args_count + 1
+ action2 =:args_str = to_string : args_count
+ pre =:#
+ sep =:: 
+ action3 =:print : pre + args_str + sep + for
+ for: args : action1 : action2 : action3
