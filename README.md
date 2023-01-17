@@ -102,6 +102,8 @@ There are some basic scripting abilities. Any line starting with a ' ' space is 
 
 For examples of this, see /examples/.
 
+Variables from your script(s) are accessible outside of scripts via [d26var:varname].
+
 ## With a config and with additional commands
 
 - If a config does not specify anything for run, you can use -- \[command] \[args] as normal.
