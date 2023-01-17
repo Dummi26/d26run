@@ -35,58 +35,43 @@ TODO:
 
 */
 
-fn main() {
-    let mut args = std::env::args().into_iter();
-    let mut config = None;
-    let mut count: u64 = gettid();
-    let mut name = None;
-    let mut home_dir = None;
-    let mut userdel = true;
-    let mut userhomedel = false;
-    let mut noconfcmd = false;
-    let mut immutable_home_at = None;
+struct Conf {
+    run: Vec<String>,
+    init: Vec<(bool, Vec<String>)>,
+    count: u64,
+    test: bool,
+    name: Option<String>,
+    passwd: Option<String>,
+    home_dir: Option<String>,
+    userdel: bool,
+    userhomedel: bool,
+    noconfcmd: bool,
+    immutable_home_at: Option<String>,
 
-    let mut config_script_variables = HashMap::new();
-    config_script_variables.insert("args".to_string(), VarValue::List(vec![]));
+    config_script_variables: HashMap<String, VarValue>,
+}
+impl Conf {
+    pub fn new() -> Self {
+        Self {
+            run: Vec::new(),
+            init: Vec::new(),
+            count: gettid(),
+            test: false,
+            name: None,
+            passwd: None,
+            home_dir: None,
+            userdel: true,
+            userhomedel: false,
+            noconfcmd: false,
+            immutable_home_at: None,
 
-    loop {
-        let arg = args.next();
-        if let Some(arg) = arg {
-            if arg == "--" { break; }
-            match arg.chars().next() {
-                Some('c') => { config = Some(arg[1..].to_string()); },
-                Some('C') => { count = arg[1..].parse().expect("Syntax is C[count], where [count] is an integer!"); },
-                Some('n') => { name = Some(arg[1..].to_string()); },
-                Some('h') => { home_dir = Some(arg[1..].to_string()); },
-                Some('H') => { immutable_home_at = Some(arg[1..].to_string()); },
-                Some('-') => match match arg[1..].split_once('=') { Some(v) => (v.0, Some(v.1)), None => (&arg[1..], None) } {
-                    ("nouserdel", _) => userdel = false,
-                    ("userhomedel", _) => userhomedel = true,
-                    ("noconfcmd", _) => noconfcmd = true,
-                    ("cfgarg", Some(arg)) => if let Some(VarValue::List(v)) = config_script_variables.get_mut("args") {
-                        v.push(VarValue::String(arg.to_string()))
-                    },
-                    _ => println!("Ignoring unknown argument '{arg}'."),
-                },
-                _ => (),
-            }
-        } else if config.is_none() {
-            println!("Syntax is 'd26run [args] -- [command + args]'.");
-            println!("The '--' is mandatory unless a config is specified using 'c[path]'.");
-            return;
-        } else {
-            break;
+            config_script_variables: HashMap::new(),
         }
     }
-
-    println!("[c] Config: {}", match &config { None => "-".to_string(), Some(c) => format!("'{c}'") });
-
-    let mut run = vec![];
-    let mut init = vec![];
-    if let Some(config) = &config {
+    pub fn load(&mut self, conf_file: &str) {
         let mut depth: Vec<(bool, ())> = vec![];
         let mut last_run = true;
-        match read_to_string(config) {
+        match read_to_string(conf_file) {
             Ok(config) => {
                 for (line_num, line) in config.lines().enumerate() {
                     match (line.chars().next(), match line.split_once(' ') { Some(v) => (v.0, Some(v.1)), None => (line, None) }) {
@@ -103,14 +88,14 @@ fn main() {
                         },
                         (Some(' '), _) => {
                             if last_run {
-                                if let Err(e) = parse_expression(line, &mut config_script_variables) {
+                                if let Err(e) = parse_expression(line, &mut self.config_script_variables) {
                                     println!("[!] config: couldn't parse expression: {e}");
                                 }
                             }
                         }
                         (_, ("if", Some(condition))) => {
                             let is_true = if last_run {
-                                match parse_expression(condition, &mut config_script_variables) {
+                                match parse_expression(condition, &mut self.config_script_variables) {
                                     Ok(v) => match v {
                                         VarValue::Bool(v) => v,
                                         _ => {
@@ -138,7 +123,7 @@ fn main() {
                                     if buf.starts_with("[d26var:") {
                                         if buf.ends_with("]") {
                                             let varname = &buf[8..buf.len()-1];
-                                            if let Some(val) = config_script_variables.get(varname) {
+                                            if let Some(val) = self.config_script_variables.get(varname) {
                                                 args.push_str(&parse_expression_val_to_string(val));
                                                 buf.clear();
                                             } else {
@@ -150,20 +135,25 @@ fn main() {
                                     }
                                 }
                             }
+                            let args = args.trim_end_matches('\n').to_string();
                             match what {
+                                // load another config
+                                "config" => self.load(&args),
                                 // run [something] adds [something] to the args for doas. The first one is the program to be executed, anything following that are args for that program: 'doas -u [user] -- [run...]'
-                                "run" => if ! noconfcmd { run.push(args) },
+                                "run" => if ! self.noconfcmd { self.run.push(args) },
                                 // init is a command that will be executed WITH THIS PROGRAMS PERMISSIONS, NOT AS THE 'd26r...' USER! BE CAREFUL WITH THIS!
-                                "init!" => init.push((true, vec![args])),
-                                "init_" => init.push((false, vec![args])), // non-fatal
-                                "init+" => init.last_mut().expect("used init+ before init! or init_!").1.push(args), // adds one argument to the last-defined init program.
-                                "count" => count = match args.parse() { Ok(v) => v, Err(e) => panic!("Syntax is count [count], where [count] is an integer! Found '{args}'. {e:?}") },
-                                "name" => if name.is_none() { name = Some(args) },
-                                "setname" => name = Some(args),
-                                "home" => if home_dir.is_none() { home_dir = Some(args) },
-                                "sethome" => home_dir = Some(args),
-                                "immuthome" => if immutable_home_at.is_none() { immutable_home_at = Some(args) },
-                                "setimmuthome" => immutable_home_at = Some(args),
+                                "init!" => self.init.push((true, vec![args])),
+                                "init_" => self.init.push((false, vec![args])), // non-fatal
+                                "init+" => self.init.last_mut().expect("used init+ before init! or init_!").1.push(args), // adds one argument to the last-defined init program.
+                                "count" => self.count = match args.parse() { Ok(v) => v, Err(e) => panic!("Syntax is count [count], where [count] is an integer! Found '{args}'. {e:?}") },
+                                "name" => if self.name.is_none() { self.name = Some(args) },
+                                "setname" => self.name = Some(args),
+                                "passwd" => if self.passwd.is_none() { self.passwd = Some(args) },
+                                "setpasswd" => self.passwd = Some(args),
+                                "home" => if self.home_dir.is_none() { self.home_dir = Some(args) },
+                                "sethome" => self.home_dir = Some(args),
+                                "immuthome" => if self.immutable_home_at.is_none() { self.immutable_home_at = Some(args) },
+                                "setimmuthome" => self.immutable_home_at = Some(args),
                                 _ => println!("[CONFIG] '{what}' is not a valid action!"),
                             }
                         },
@@ -173,13 +163,60 @@ fn main() {
             Err(e) => panic!("Could not read config: {e}"),
         }
     }
+}
 
-    match &home_dir { Some(v) if v.is_empty() => home_dir = None, _ => () }
-    match &immutable_home_at.as_ref() { Some(v) if v.is_empty() => immutable_home_at = None, _ => () }
-    let name = match name { Some(n) => n, None => String::new() };
+fn main() {
+    let mut args = std::env::args().into_iter();
+    let mut configs = Vec::new();
+    let mut conf = Conf::new();
+    conf.config_script_variables.insert("args".to_string(), VarValue::List(vec![]));
+
+    loop {
+        let arg = args.next();
+        if let Some(arg) = arg {
+            if arg == "--" { break; }
+            match arg.chars().next() {
+                Some('c') => { configs.push(arg[1..].to_string()); },
+                Some('p') => { conf.passwd = Some(arg[1..].to_string()); },
+                Some('C') => { conf.count = arg[1..].parse().expect("Syntax is C[count], where [count] is an integer!"); },
+                Some('n') => { conf.name = Some(arg[1..].to_string()); },
+                Some('h') => { conf.home_dir = Some(arg[1..].to_string()); },
+                Some('H') => { conf.immutable_home_at = Some(arg[1..].to_string()); },
+                Some('-') => match match arg[1..].split_once('=') { Some(v) => (v.0, Some(v.1)), None => (&arg[1..], None) } {
+                    ("test", _) => conf.test = true,
+                    ("nouserdel", _) => conf.userdel = false,
+                    ("userhomedel", _) => conf.userhomedel = true,
+                    ("noconfcmd", _) => conf.noconfcmd = true,
+                    ("cfgarg", Some(arg)) => if let Some(VarValue::List(v)) = conf.config_script_variables.get_mut("args") {
+                        v.push(VarValue::String(arg.to_string()))
+                    },
+                    _ => println!("Ignoring unknown argument '{arg}'."),
+                },
+                _ => (),
+            }
+        } else if configs.is_empty() {
+            println!("Syntax is 'd26run [args] -- [command + args]'.");
+            println!("The '--' is mandatory unless a config is specified using 'c[path]'.");
+            return;
+        } else {
+            break;
+        }
+    }
+
+    println!("[c] Configs: {:?}", &configs);
+
+    for config in &configs {
+        conf.load(config);
+    }
+
+    match &conf.home_dir { Some(v) if v.is_empty() => conf.home_dir = None, _ => () }
+    match &conf.immutable_home_at.as_ref() { Some(v) if v.is_empty() => conf.immutable_home_at = None, _ => () }
+    match &conf.passwd.as_ref() { Some(v) if v.is_empty() => conf.passwd = None, _ => () }
+    let name = match conf.name { Some(n) => n, None => String::new() };
+    let count = conf.count;
 
     let username = format!("d26r{count}_{name}");
-    let home_dir = match home_dir {
+    let home_dir = match conf.home_dir {
         Some(v) => v
             .replace("[d26%count]", &count.to_string())
             .replace("[d26%username]", &username)
@@ -189,36 +226,69 @@ fn main() {
 
     println!("[C] Count: {count}");
     println!("[n] Name: {name}");
+    if let Some(passwd) = &conf.passwd { println!("[p] Passwd: {passwd}"); }
     println!("Username: {username}");
     println!("Home dir: {home_dir}");
     println!();
 
+    if conf.test { println!("----- test mode -----"); }
+
     println!("Removing previous user:");
-    Command::new("userdel").arg(username.as_str()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).output().unwrap();
-
-    if userhomedel || immutable_home_at.is_some() { println!("Removing home: {:?}", rmdir(std::path::PathBuf::from(home_dir.as_str()))); }
-
-    if let Some(immuthome) = immutable_home_at {
-        println!("Copying existing home from '{immuthome} to '{home_dir}'... (setup immutable home)");
-        for error in copy_dir_recursive_ignore_errors(&immuthome, &home_dir) {
-            println!(" E: {error:?}");
-        }
-        println!("Done. (immutable home created)");
+    if conf.test {
+        println!("Removing user '{}'", username.as_str());
     } else {
-        mkdir(home_dir.as_str()).unwrap();
+        Command::new("userdel").arg(username.as_str()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).output().unwrap();
+    }
+
+    if conf.userhomedel || conf.immutable_home_at.is_some() {
+        if conf.test {
+            println!("Removing home: '{:?}'", std::path::PathBuf::from(home_dir.as_str()));
+        } else {
+            println!("Removing home: {:?}", rmdir(std::path::PathBuf::from(home_dir.as_str())));
+        }
+    }
+
+    if let Some(immuthome) = conf.immutable_home_at {
+        println!("Copying existing home from '{immuthome} to '{home_dir}'... (setup immutable home)");
+        if conf.test {
+            println!("Done. (immutable home in test mode)");
+        } else {
+            for error in copy_dir_recursive_ignore_errors(&immuthome, &home_dir) {
+                println!(" E: {error:?}");
+            }
+            println!("Done. (immutable home created)");
+        }
+    } else {
+        if conf.test {
+            println!("creating home dir if it doesn't exist already @ '{}'", home_dir);
+        } else {
+            mkdir(home_dir.as_str()).unwrap();
+        }
     }
 
     println!("Adding new user:");
-    Command::new("useradd").args([
-        "--home-dir", home_dir.as_str(),
-        "--no-user-group",
-        "--create-home",
-        username.as_str(),
-    ]).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().unwrap();
-    println!("chown home dir: {:?}", Command::new("chown").args(["-R", username.as_str(), home_dir.as_str()]).status().unwrap());
+    if conf.test {
+        println!(" + '{}'", username);
+    } else {
+        let mut cmd = Command::new("useradd");
+        if let Some(passwd) = &conf.passwd {
+            cmd.args(["-p", passwd]);
+        }
+        cmd.args([
+            "--home-dir", home_dir.as_str(),
+            "--no-user-group",
+            "--create-home",
+            username.as_str(),
+        ]).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().unwrap();
+    }
+    if conf.test {
+        println!("chown home dir: chown -R '{}' '{}'", username.as_str(), home_dir.as_str());
+    } else {
+        println!("chown home dir: {:?}", Command::new("chown").args(["-R", username.as_str(), home_dir.as_str()]).status().unwrap());
+    }
 
     println!("Running init commands from config, if any...");
-    for (fatal, cmd) in init {
+    for (fatal, cmd) in conf.init {
         let mut cmds = cmd.into_iter();
         let cmd = cmds.next().unwrap();
         let count_s = count.to_string();
@@ -231,16 +301,36 @@ fn main() {
             .replace("[d26%home_dir]", &home_dir)
             );
         }
-        let out = Command::new(&cmd).args(args).status();
-        println!("Command '{cmd}': {:?}", out);
-        if fatal && ! out.unwrap().success() { panic!("Cancelling because a fatal init command was unsuccessful.") };
+        if conf.test {
+            println!("[cmd] '{}' with args {:?}", cmd, args);
+        } else {
+            let out = Command::new(&cmd).args(args).status();
+            println!("Command '{cmd}': {:?}", out);
+            if fatal && ! out.unwrap().success() { panic!("Cancelling because a fatal init command was unsuccessful.") };
+        }
     }
 
-    println!("Setup complete, running command now...\n\n");
-    println!("\n\n[EXIT STATUS: {:?}]", Command::new("doas").args(["-u".to_string(), username.clone(), "--".to_string()].into_iter().chain(run.into_iter()).chain(args)).status());
+    if conf.test {
+        println!("Setup complete.");
+    } else {
+        println!("Setup complete, running command now...\n\n");
+        println!("\n\n[EXIT STATUS: {:?}]", Command::new("doas").args(["-u".to_string(), username.clone(), "--".to_string()].into_iter().chain(conf.run.into_iter()).chain(args)).status());
+    }
 
-    if userdel { println!("Removing user: {:?}", Command::new("userdel").arg(username.as_str()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().unwrap()); }
-    if userhomedel { println!("Removing user home: {:?}", rmdir(home_dir)); }
+    if conf.userdel {
+        if conf.test {
+            println!("Removing user: '{}'", username);
+        } else {
+            println!("Removing user: {:?}", Command::new("userdel").arg(username.as_str()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().unwrap());
+        }
+    }
+    if conf.userhomedel {
+        if conf.test {
+            println!("Removing user home '{}'", home_dir);
+        } else {
+            println!("Removing user home: {:?}", rmdir(home_dir));
+        }
+    }
 }
 
 
@@ -386,8 +476,22 @@ fn parse_expression(expr: &str, vars: &mut HashMap<String, VarValue>) -> Result<
                     ("empty", [VarValue::List(v)]) => VarValue::Bool(v.is_empty()),
                     ("length", [VarValue::String(v)]) => VarValue::Int(v.len() as _),
                     ("length", [VarValue::List(v)]) => VarValue::Int(v.len() as _),
-                    _ => {
-                        println!("[!] config: not a function: {func} with {} arguments", parts.len());
+                    ("cmd-output", [VarValue::String(cmd), ..]) => {
+                        let mut args = Vec::new();
+                        for part in parts.iter().skip(1) {
+                            args.push(parse_expression_val_to_string(part));
+                        }
+                        println!("Running command in script: {cmd}");
+                        match Command::new(cmd).args(args).output() {
+                            Ok(out) => VarValue::String(String::from_utf8_lossy(out.stdout.as_slice()).to_string()),
+                            Err(e) => {
+                                println!(" [CMD/E] {e:?}");
+                                VarValue::Nothing
+                            },
+                        }
+                    },
+                    (func, args) => {
+                        println!("[!] config: not a function: {func} with {} arguments", args.len());
                         VarValue::Nothing
                     }
                 }

@@ -27,6 +27,7 @@ Options:
 - c\[path to config]
 - C\[count]
 - n\[name]
+- p\[passwd (encrypted - see useradd -p or --password)]
 - h\[home dir]
 - H\[immutable home dir]
 - -\[nouserdel, userhomedel, noconfcmd]
@@ -58,15 +59,20 @@ To use it, run:
 
     doas -- d26run c\[path]
 
+Multiple configs can be specified by using 'c\[config1] c\[config2] ...'
+
 A config *can* specify the following things:
 
 - run: the command that should be run as the new user (and it's arguments: the first run specifies the executable, all others are used as arguments for the program)
+- config: loads another config. (behavior might depend on the position of this line in the config file: the inner config can overwrite any values specified **before** the line in the outer config) (can be used multiple times without issue, but can loop forever due to recursion!)
 - init!: a command that should be run as the user executing d26run (most likely root). This can be used to, for example, add the newly created user to some groups you wish to use.
 - init\_: like init!, but a nonzero exit status is not fatal. Use this for things like mkdir if the directory might already exist.
 - init+: Adds an argument to the most recent init\[!\_] command. (See examples)
 - count: Specifies the count used for the username. If not specified, this is the PID.
 - name: Specifies what should be appended to 'd26r\[PID]\_' to form the username. This just makes it easier to know what user is supposed to do what. n\[name] as an argument to the command has higher priority, so it's not guaranteed that this will be used as the name.
 - setname: Like name, but this can overwrite n\[name].
+- passwd: Encrypted password. If this is present, -p [passwd] will be passed to useradd.
+- setpasswd: Like passwd, but can overwrite p\[passwd].
 - home: Specified the path to the new user's home directory. Can be overwritten using h\[dir]
 - sethome: like home, but can't be overwritten. (compare with name vs setname)
 - immuthome: before the new user is even created, the home directory will be created as an empty folder and then the path specified in immuthome will be copied to it. useful to provide some ~/.config/\* files for programs while keeping the user (effectively) readonly.
@@ -92,7 +98,7 @@ Empty lines and lines starting with # will be ignored. Use # for comments.
   - 'd26run c/tmp/firefox -noconfcmd -- alacritty'
 - Configs can specify name or setname, home or sethome, etc. In general, name has the lowest priority, followed by the args (n\[...]), and setname has the highest priority. If a value is provided, but it is an empty string, it will be treated as if no value was provided. Because of this, if a config specifies 'name weird\_name', this can be reset by simply providing 'n' as an argument.
 
-## Example configs
+## Example configs (see /examples/ for more advanced stuff)
 
     name obs
     home /home/d26r/[d26%name]
