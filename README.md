@@ -20,7 +20,7 @@ Relies on the following commands:
 
 ## Without a config
 
-    d26run \[options..] -- \[command] \[args..]
+    d26run [options..] -- [command] [args..]
 
 Options:
 
@@ -40,12 +40,12 @@ Thunar will show HOME as '/tmp/dummi26/run/d26r\[PID]\_/home/' and shouldn't hav
 
 To use a different home directory and append fileman to the temporary username, run:
 
-    doas -- d26run h/tmp/other\_home nfileman -- thunar /tmp
+    doas -- d26run h/tmp/other_home nfileman -- thunar /tmp
 
 If you want an 'always fresh' experience without putting HOME in /tmp, you can use the immutable home dir as the preset.
 If this is specified, then everything in the immutable home dir will be copied to the actual home dir (in /tmp if nothing else is specified), so you can add configs to your programs without letting them save anything. (They can save things, but all changes will be lost)
 
-    doas -- d26run h/tmp/my\_temp\_home H/home/presets/firefox -- firefox
+    doas -- d26run h/tmp/my_temp_home H/home/presets/firefox -- firefox
 
 or just
 
@@ -57,7 +57,7 @@ A config is a UTF-8 text file.
 
 To use it, run:
 
-    doas -- d26run c\[path]
+    doas -- d26run c[path]
 
 Multiple configs can be specified by using 'c\[config1] c\[config2] ...'
 
@@ -121,7 +121,7 @@ For examples of this, see /examples/.
     run obs
     run --startreplaybuffer
 
-    init\_ usermod
+    init_ usermod
     init+ -G
     init+ video,audio
     init+ [d26%username]
