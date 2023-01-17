@@ -78,7 +78,7 @@ A config *can* specify the following things:
 - immuthome: before the new user is even created, the home directory will be created as an empty folder and then the path specified in immuthome will be copied to it. useful to provide some ~/.config/\* files for programs while keeping the user (effectively) readonly.
 - setimmuthome: like immuthome, but can't be overwritten. (compare with name vs setname)
 
-Empty lines and lines starting with # will be ignored. Use # for comments.
+Lines starting with # will be ignored. Use # for comments.
 
 \[d26%VAL] will be replaced with the corresponding value, if it exists:
 
@@ -86,6 +86,21 @@ Empty lines and lines starting with # will be ignored. Use # for comments.
 - username: the username (equal to d26r\[d26%count]\_\[d26%name])
 - name: the name that was specified, or an empty string.
 - home\_dir: The home directory. This substitution doesn't work for specifying the home directory, because that would be confusing.
+
+### Scripting
+
+There are some basic scripting abilities. Any line starting with a ' ' space is considered part of a script.
+
+- To define a string, use 'varname=:my string' (there are no string literals yet, which makes scripting very annoying, as this string syntax is the only workaround right now.)
+- To set a variable to a value, use 'varname=expression'.
+- Functions: To call a function, use 'func\_name : arg1 : arg2 : ...' with any number of arguments. Multiple function calls must occur on separate lines because brackets are not supported (yet?).
+- Expressions:
+  + ! is used to invert bools: '!true == false', '!false == true'
+  + Operators: 'a [&& || == + - * /] b', i.e. '3 + 4 == 7'
+  + Literals: If nothing else applies, int, float and bool literals will be parsed.
+  + Variables: If this also fails, the expression is assumed to be a variable.
+
+For examples of this, see /examples/.
 
 ## With a config and with additional commands
 
