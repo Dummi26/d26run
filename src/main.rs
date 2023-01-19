@@ -221,7 +221,7 @@ fn main() {
             .replace("[d26%count]", &count.to_string())
             .replace("[d26%username]", &username)
             .replace("[d26%name]", &name),
-        None => format!("/tmp/dummi26/run/{username}/home")
+        None => format!("/tmp/dummi26_run/{username}/home")
     };
 
     println!("[C] Count: {count}");
