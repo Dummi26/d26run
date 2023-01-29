@@ -42,6 +42,8 @@ struct Conf {
     test: bool,
     name: Option<String>,
     passwd: Option<String>,
+    group: Option<String>, // -g
+    groups: Option<String>, // -G
     home_dir: Option<String>,
     userdel: bool,
     userhomedel: bool,
@@ -59,6 +61,8 @@ impl Conf {
             test: false,
             name: None,
             passwd: None,
+            group: None,
+            groups: None,
             home_dir: None,
             userdel: true,
             userhomedel: false,
@@ -150,6 +154,20 @@ impl Conf {
                                 "setname" => self.name = Some(args),
                                 "passwd" => if self.passwd.is_none() { self.passwd = Some(args) },
                                 "setpasswd" => self.passwd = Some(args),
+                                "group" => if self.group.is_none() { self.group = Some(args) },
+                                "setgroup" => self.group = Some(args),
+                                "groups" => if self.groups.is_none() { self.groups = Some(args) },
+                                "setgroups" => self.groups = Some(args),
+                                "addgroups" => match self.groups.take() {
+                                    Some(groups) => {
+                                        self.groups = if groups.len() == 0 {
+                                            Some(args)
+                                        } else {
+                                            Some(format!("{groups},{args}"))
+                                        }
+                                    },
+                                    None => self.groups = Some(args),
+                                }
                                 "home" => if self.home_dir.is_none() { self.home_dir = Some(args) },
                                 "sethome" => self.home_dir = Some(args),
                                 "immuthome" => if self.immutable_home_at.is_none() { self.immutable_home_at = Some(args) },
@@ -178,6 +196,8 @@ fn main() {
             match arg.chars().next() {
                 Some('c') => { configs.push(arg[1..].to_string()); },
                 Some('p') => { conf.passwd = Some(arg[1..].to_string()); },
+                Some('g') => { conf.group = Some(arg[1..].to_string()); },
+                Some('G') => { conf.groups = Some(arg[1..].to_string()); },
                 Some('C') => { conf.count = arg[1..].parse().expect("Syntax is C[count], where [count] is an integer!"); },
                 Some('n') => { conf.name = Some(arg[1..].to_string()); },
                 Some('h') => { conf.home_dir = Some(arg[1..].to_string()); },
@@ -273,6 +293,12 @@ fn main() {
         let mut cmd = Command::new("useradd");
         if let Some(passwd) = &conf.passwd {
             cmd.args(["-p", passwd]);
+        }
+        if let Some(g) = &conf.group {
+            cmd.args(["-g", g]);
+        }
+        if let Some(g) = &conf.groups {
+            cmd.args(["-G", g]);
         }
         cmd.args([
             "--home-dir", home_dir.as_str(),
