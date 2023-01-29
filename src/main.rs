@@ -110,7 +110,6 @@ impl Conf {
         }
     }
     pub fn apply_to_string(&self, string: &str) -> String {
-        println!("Apply to {string}");
         let mut string = string
         .replace("[d26%count]", &self.count.to_string())
         .replace("[d26%username]", &self.get_username())
@@ -365,10 +364,12 @@ fn main() {
         }
         cmd.args([
             "--home-dir", home_dir.as_str(),
-            "--no-user-group",
+            // "--no-user-group",
             "--create-home",
             username.as_str(),
-        ]).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().unwrap();
+        ]);
+        println!("Useradd command: {cmd:?}");
+        cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().unwrap();
     }
     if test {
         println!("chown home dir: chown -R '{}' '{}'", username.as_str(), home_dir.as_str());
