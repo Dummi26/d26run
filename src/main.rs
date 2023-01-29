@@ -72,6 +72,54 @@ impl Conf {
             config_script_variables: HashMap::new(),
         }
     }
+    pub fn get_username(&self) -> String { format!("d26r{}_{}", self.count, match &self.name { Some(v) => v, None => "" }) }
+    pub fn apply_to_all_strings(&mut self) {
+
+        let mut run = std::mem::replace(&mut self.run, Vec::with_capacity(0));
+        for v in run.iter_mut() {
+            *v = self.apply_to_string(&v);
+        }
+        self.run = run;
+
+        let mut init = std::mem::replace(&mut self.init, Vec::with_capacity(0));
+        for v in init.iter_mut() {
+            for v in v.1.iter_mut() {
+                *v = self.apply_to_string(&v);
+            }
+        }
+        self.init = init;
+
+        if let Some(v) = self.name.take() {
+            self.name = Some(self.apply_to_string(&v));
+        }
+
+        if let Some(v) = self.group.take() {
+            self.group = Some(self.apply_to_string(&v));
+        }
+
+        if let Some(v) = self.groups.take() {
+            self.groups = Some(self.apply_to_string(&v));
+        }
+
+        if let Some(v) = self.home_dir.take() {
+            self.home_dir = Some(self.apply_to_string(&v));
+        }
+
+        if let Some(v) = self.immutable_home_at.take() {
+            self.immutable_home_at = Some(self.apply_to_string(&v));
+        }
+    }
+    pub fn apply_to_string(&self, string: &str) -> String {
+        let mut string = string
+        .replace("[d26%count]", &self.count.to_string())
+        .replace("[d26%username]", &self.get_username())
+        ;
+        if let Some(v) = &self.group { string = string.replace("[d26%group]", &self.apply_to_string(v)); }
+        if let Some(v) = &self.groups { string = string.replace("[d26%groups]", &self.apply_to_string(v)); }
+        if let Some(v) = &self.home_dir { string = string.replace("[d26%home_dir]", &self.apply_to_string(v)); }
+        if let Some(v) = &self.immutable_home_at { string = string.replace("[d26%immutable_home_at]", &self.apply_to_string(v)); }
+        string
+    }
     pub fn load(&mut self, conf_file: &str) {
         let mut depth: Vec<(bool, ())> = vec![];
         let mut last_run = true;
@@ -232,36 +280,40 @@ fn main() {
     match &conf.home_dir { Some(v) if v.is_empty() => conf.home_dir = None, _ => () }
     match &conf.immutable_home_at.as_ref() { Some(v) if v.is_empty() => conf.immutable_home_at = None, _ => () }
     match &conf.passwd.as_ref() { Some(v) if v.is_empty() => conf.passwd = None, _ => () }
-    let name = match conf.name { Some(n) => n, None => String::new() };
+
+    let name = match &conf.name { Some(n) => conf.apply_to_string(n), None => String::new() };
     let count = conf.count;
 
-    let username = format!("d26r{count}_{name}");
-    let home_dir = match conf.home_dir {
-        Some(v) => v
-            .replace("[d26%count]", &count.to_string())
-            .replace("[d26%username]", &username)
-            .replace("[d26%name]", &name),
+    let username = conf.get_username();
+    let home_dir = match &conf.home_dir {
+        Some(v) => conf.apply_to_string(v),
         None => format!("/tmp/dummi26_run/{username}/home")
     };
+
+    conf.apply_to_all_strings();
+
+    let test = conf.test;
 
     println!("[C] Count: {count}");
     println!("[n] Name: {name}");
     if let Some(passwd) = &conf.passwd { println!("[p] Passwd: {passwd}"); }
     println!("Username: {username}");
     println!("Home dir: {home_dir}");
+    if let Some(v) = &conf.group { println!("Group:     {v}"); }
+    if let Some(v) = &conf.groups { println!("Groups:    {v}"); }
     println!();
 
-    if conf.test { println!("----- test mode -----"); }
+    if test { println!("----- test mode -----"); }
 
     println!("Removing previous user:");
-    if conf.test {
+    if test {
         println!("Removing user '{}'", username.as_str());
     } else {
         Command::new("userdel").arg(username.as_str()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).output().unwrap();
     }
 
     if conf.userhomedel || conf.immutable_home_at.is_some() {
-        if conf.test {
+        if test {
             println!("Removing home: '{:?}'", std::path::PathBuf::from(home_dir.as_str()));
         } else {
             println!("Removing home: {:?}", rmdir(std::path::PathBuf::from(home_dir.as_str())));
@@ -270,7 +322,7 @@ fn main() {
 
     if let Some(immuthome) = conf.immutable_home_at {
         println!("Copying existing home from '{immuthome} to '{home_dir}'... (setup immutable home)");
-        if conf.test {
+        if test {
             println!("Done. (immutable home in test mode)");
         } else {
             for error in copy_dir_recursive_ignore_errors(&immuthome, &home_dir) {
@@ -279,7 +331,7 @@ fn main() {
             println!("Done. (immutable home created)");
         }
     } else {
-        if conf.test {
+        if test {
             println!("creating home dir if it doesn't exist already @ '{}'", home_dir);
         } else {
             mkdir(home_dir.as_str()).unwrap();
@@ -287,7 +339,7 @@ fn main() {
     }
 
     println!("Adding new user:");
-    if conf.test {
+    if test {
         println!(" + '{}'", username);
     } else {
         let mut cmd = Command::new("useradd");
@@ -307,7 +359,7 @@ fn main() {
             username.as_str(),
         ]).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().unwrap();
     }
-    if conf.test {
+    if test {
         println!("chown home dir: chown -R '{}' '{}'", username.as_str(), home_dir.as_str());
     } else {
         println!("chown home dir: {:?}", Command::new("chown").args(["-R", username.as_str(), home_dir.as_str()]).status().unwrap());
@@ -315,28 +367,22 @@ fn main() {
 
     println!("Running init commands from config, if any...");
     for (fatal, cmd) in conf.init {
-        let mut cmds = cmd.into_iter();
-        let cmd = cmds.next().unwrap();
-        let count_s = count.to_string();
-        let mut args = vec![];
-        for arg in cmds {
-            args.push(arg
-            .replace("[d26%count]", &count_s)
-            .replace("[d26%username]", &username)
-            .replace("[d26%name]", &name)
-            .replace("[d26%home_dir]", &home_dir)
-            );
-        }
-        if conf.test {
-            println!("[cmd] '{}' with args {:?}", cmd, args);
-        } else {
-            let out = Command::new(&cmd).args(args).status();
-            println!("Command '{cmd}': {:?}", out);
-            if fatal && ! out.unwrap().success() { panic!("Cancelling because a fatal init command was unsuccessful.") };
+        if let Some(command) = cmd.first() {
+            let mut out = Command::new(&command);
+            if cmd.len() > 1 {
+                out.args(&cmd[1..]);
+            }
+            if test {
+                println!("Command {out:?}");
+            } else {
+                let status = out.status();
+                println!("Command {out:?}: {status:?}");
+                if fatal && ! status.unwrap().success() { panic!("Cancelling because a fatal init command was unsuccessful.") };
+            }
         }
     }
 
-    if conf.test {
+    if test {
         println!("Setup complete.");
     } else {
         println!("Setup complete, running command now...\n\n");
@@ -344,14 +390,14 @@ fn main() {
     }
 
     if conf.userdel {
-        if conf.test {
+        if test {
             println!("Removing user: '{}'", username);
         } else {
             println!("Removing user: {:?}", Command::new("userdel").arg(username.as_str()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().unwrap());
         }
     }
     if conf.userhomedel {
-        if conf.test {
+        if test {
             println!("Removing user home '{}'", home_dir);
         } else {
             println!("Removing user home: {:?}", rmdir(home_dir));
