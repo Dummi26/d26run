@@ -110,14 +110,23 @@ impl Conf {
         }
     }
     pub fn apply_to_string(&self, string: &str) -> String {
+        println!("Apply to {string}");
         let mut string = string
         .replace("[d26%count]", &self.count.to_string())
         .replace("[d26%username]", &self.get_username())
         ;
-        if let Some(v) = &self.group { string = string.replace("[d26%group]", &self.apply_to_string(v)); }
-        if let Some(v) = &self.groups { string = string.replace("[d26%groups]", &self.apply_to_string(v)); }
-        if let Some(v) = &self.home_dir { string = string.replace("[d26%home_dir]", &self.apply_to_string(v)); }
-        if let Some(v) = &self.immutable_home_at { string = string.replace("[d26%immutable_home_at]", &self.apply_to_string(v)); }
+        if string.contains("[d26%group]") {
+            if let Some(v) = &self.group { string = string.replace("[d26%group]", &self.apply_to_string(v)); }
+        }
+        if string.contains("[d26%groups]") {
+            if let Some(v) = &self.groups { string = string.replace("[d26%groups]", &self.apply_to_string(v)); }
+        }
+        if string.contains("[d26%home_dir]") {
+            if let Some(v) = &self.home_dir { string = string.replace("[d26%home_dir]", &self.apply_to_string(v)); }
+        }
+        if string.contains("[d26%immutable_home_at]") {
+            if let Some(v) = &self.immutable_home_at { string = string.replace("[d26%immutable_home_at]", &self.apply_to_string(v)); }
+        }
         string
     }
     pub fn load(&mut self, conf_file: &str) {
@@ -207,11 +216,13 @@ impl Conf {
                                 "groups" => if self.groups.is_none() { self.groups = Some(args) },
                                 "setgroups" => self.groups = Some(args),
                                 "addgroups" => match self.groups.take() {
-                                    Some(groups) => {
+                                    Some(mut groups) => {
                                         self.groups = if groups.len() == 0 {
                                             Some(args)
                                         } else {
-                                            Some(format!("{groups},{args}"))
+                                            groups.push(',');
+                                            groups.push_str(&args);
+                                            Some(groups)
                                         }
                                     },
                                     None => self.groups = Some(args),
@@ -281,12 +292,12 @@ fn main() {
     match &conf.immutable_home_at.as_ref() { Some(v) if v.is_empty() => conf.immutable_home_at = None, _ => () }
     match &conf.passwd.as_ref() { Some(v) if v.is_empty() => conf.passwd = None, _ => () }
 
-    let name = match &conf.name { Some(n) => conf.apply_to_string(n), None => String::new() };
+    let name = match &conf.name { Some(n) => n.to_owned(), None => String::new() };
     let count = conf.count;
 
     let username = conf.get_username();
     let home_dir = match &conf.home_dir {
-        Some(v) => conf.apply_to_string(v),
+        Some(v) => v.to_owned(),
         None => format!("/tmp/dummi26_run/{username}/home")
     };
 
