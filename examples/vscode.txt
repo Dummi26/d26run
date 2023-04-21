@@ -1,5 +1,7 @@
 config /home/mark/Dokumente/apps/.common/gui.txt
 
+run code
+
 # count 0
 name shared_code
 home /menc/d26r/void/shared/code
