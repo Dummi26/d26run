@@ -1,0 +1,16 @@
+config /home/mark/Dokumente/apps/.common/gui.txt
+
+# count 0
+name shared_code
+home /menc/d26r/void/shared/code
+
+# set password to allow using chsh to switch from sh to bash/fish
+ pwd=:my_pw
+ openssl=:openssl
+ passwd=:passwd
+ minusone=:-1
+ pwd = cmd-output : openssl : passwd : minusone : pwd
+passwd [d26var:pwd]
+
+# access to some disks
+addgroups mdisks,mdisk-t5
