@@ -1,0 +1,7 @@
+run firefox
+
+count 0
+name private_firefox
+home /menc/d26r/void/private/firefox
+
+addgroups audio
