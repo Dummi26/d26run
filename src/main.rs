@@ -1,5 +1,5 @@
-use std::fs::{create_dir_all as mkdir, remove_dir_all as rmdir};
-use std::path::Path;
+use std::fs::{self, create_dir_all as mkdir, remove_dir_all as rmdir};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 mod conf;
@@ -257,19 +257,67 @@ fn main() {
     }
 }
 
-fn copy_dir_recursive_ignore_errors<P1, P2>(
-    dir: P1,
-    target: P2,
-) -> Vec<(std::ffi::OsString, std::io::Error)>
+fn copy_dir_recursive_ignore_errors<P1, P2>(dir: P1, target: P2) -> Vec<(PathBuf, std::io::Error)>
 where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
 {
-    Command::new("cp")
-        .arg("-r")
-        .arg(dir.as_ref().as_os_str())
-        .arg(target.as_ref().as_os_str())
-        .status()
-        .unwrap();
-    vec![] // TODO!
+    let mut errs = vec![];
+    let mut stats = Default::default();
+    copy_dir_recursive_ignore_errors_inner(dir.as_ref(), target.as_ref(), &mut errs, &mut stats);
+    eprintln!("Copied {} files ({}MB), encountered {} errors.", stats.0, stats.1 as f64 / 1000.0, errs.len());
+    errs
+}
+fn copy_dir_recursive_ignore_errors_inner(
+    dir: &Path,
+    target: &Path,
+    errors: &mut Vec<(PathBuf, std::io::Error)>,
+    stats: &mut (u32, u64),
+) {
+    match fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries {
+                match entry {
+                    Ok(file) => {
+                        if let Ok(meta) = file.metadata() {
+                            // if meta.is_symlink() {
+                            //     eprintln!("Warn: Ignoring symlink in immuthome: {:?}", file.path());
+                            // } else
+                            if meta.is_dir() {
+                                let idir = file.path();
+                                let idir = idir.as_path();
+                                let itarget = target.join(file.file_name());
+                                let itarget = itarget.as_path();
+                                if let Err(err) = fs::create_dir(itarget) {
+                                    errors.push((idir.into(), err));
+                                }
+                                copy_dir_recursive_ignore_errors_inner(
+                                    idir,
+                                    itarget,
+                                    errors,
+                                    stats,
+                                )
+                            } else if meta.is_file() {
+                                match fs::copy(file.path(), target.join(file.file_name()).as_path())
+                                {
+                                    Ok(bytes) => {
+                                        stats.0 += 1;
+                                        stats.1 += bytes;
+                                    },
+                                    Err(e) => errors.push((file.path(), e)),
+                                }
+                            } else {
+                                eprintln!(
+                                    "WARN! [assumed unreachable]! File was not symlink, dir, or file: {:?}",
+                                    file.path()
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => errors.push((dir.into(), e)),
+                }
+            }
+        }
+        Err(e) => errors.push((dir.into(), e)),
+    }
 }
