@@ -130,29 +130,6 @@ fn main() {
         }
     }
 
-    if let Some(immuthome) = conf.immutable_home_at {
-        println!(
-            "Copying existing home from '{immuthome} to '{home_dir}'... (setup immutable home)"
-        );
-        if test {
-            println!("Done. (immutable home in test mode)");
-        } else {
-            for error in copy_dir_recursive_ignore_errors(&immuthome, &home_dir) {
-                println!(" E: {error:?}");
-            }
-            println!("Done. (immutable home created)");
-        }
-    } else {
-        if test {
-            println!(
-                "creating home dir if it doesn't exist already @ '{}'",
-                home_dir
-            );
-        } else {
-            mkdir(home_dir.as_str()).unwrap();
-        }
-    }
-
     println!("Adding new user:");
     if test {
         println!(" + '{}'", username);
@@ -180,6 +157,30 @@ fn main() {
             .status()
             .unwrap();
     }
+
+    if let Some(immuthome) = conf.immutable_home_at {
+        println!(
+            "Copying existing home from '{immuthome} to '{home_dir}'... (setup immutable home)"
+        );
+        if test {
+            println!("Done. (immutable home in test mode)");
+        } else {
+            for error in copy_dir_recursive_ignore_errors(&immuthome, &home_dir) {
+                println!(" E: {error:?}");
+            }
+            println!("Done. (immutable home created)");
+        }
+    } else {
+        if test {
+            println!(
+                "creating home dir if it doesn't exist already @ '{}'",
+                home_dir
+            );
+        } else {
+            mkdir(home_dir.as_str()).unwrap();
+        }
+    }
+
     if test {
         println!(
             "chown home dir: chown -R '{}' '{}'",
