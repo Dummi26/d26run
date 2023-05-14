@@ -1,0 +1,24 @@
+# /etc/d26run/configs/tmp_firefox
+
+# /etc/d26run/allow/anyone - a file with 777 permissions,
+# because clients authenticate by deleting the 'auth' file,
+# which is cp'd from allow/<name>
+# -> only users who can delete a copy of the allow/<name> file can use d26run-server,
+#    but they can't delete the original because they can't write to /etc
+allow anyone
+
+# we use d26run because d26run-server can't (yet?) be used to change users.
+command d26run
+args_clear
+arg_add -c
+arg_add /home/mark/Dokumente/apps/tmp/firefox.txt
+
+# use the same user that is running d26run-server
+user_inherit
+# use the users group (must be specified *explicitly* to prevent accidentally running a random command as root)
+group_inherit
+
+# keep PATH from the d26run-server process
+env_inherit PATH
+# keep DISPLAY from the d26run-server process. if it doesn't have DISPLAY set, default to :0
+env_inherit DISPLAY=:0
