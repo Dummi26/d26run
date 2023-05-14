@@ -88,3 +88,10 @@ impl Con {
         assert_eq!("auth accept", self.read_line().as_str());
     }
 }
+impl Drop for Con {
+    fn drop(&mut self) {
+        if let Err(e) = fs::remove_dir_all(&self.client_dir) {
+            eprintln!("[WARN] Error removing d26run-client-dir - this isn't problematic, but might clutter your /tmp/:\n    {e:?}");
+        }
+    }
+}
