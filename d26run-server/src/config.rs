@@ -1,6 +1,9 @@
 use std::{collections::HashMap, fs};
 
-use crate::{run::RunCmdBuilder, DIR_CONFIGS};
+use crate::{
+    run::{RunCmdBuilder, VarValue},
+    DIR_CONFIGS,
+};
 
 pub struct Config {
     /// a set of configs loaded from DIR_CONFIGS
@@ -26,11 +29,17 @@ pub fn init() -> Config {
                                         name
                                     )
                                 }
-                                if let Some(cmd) = runcmd.to_runcmd() {
-                                    eprintln!("{name} := {cmd:?}");
-                                    run_cmds.insert(name.to_owned(), runcmd);
-                                } else {
-                                    eprintln!("[WARN] Skipping file '{}': Missing fields", name)
+                                match runcmd.verify() {
+                                    Ok(()) => {
+                                        eprintln!("[INFO]     added run_cmd {name}");
+                                        run_cmds.insert(name.to_owned(), runcmd);
+                                    }
+                                    Err(err) => {
+                                        eprintln!(
+                                            "[WARN] Skipping file '{}' due to error:\n    {err:?}",
+                                            name
+                                        )
+                                    }
                                 }
                             } else {
                                 eprintln!(
@@ -75,9 +84,42 @@ pub fn runcmd_from_file(name: &str, config: &mut RunCmdBuilder) -> Result<(), Co
             "config" => runcmd_from_file(right, config)?,
             "var" => {
                 if let Some((name, value)) = right.split_once(' ') {
-                    config
-                        .default_vars
-                        .insert(name.to_owned(), value.to_owned());
+                    if let Some((mode, value)) = value.split_once(' ') {
+                        if let Some(val) = match mode {
+                            "set" => Some(VarValue::Val(value.to_owned())),
+                            "from-cmd" => Some(VarValue::OutputOf(value.to_owned(), vec![])),
+                            "from-cmd-sh" => Some(VarValue::OutputOf(
+                                "sh".to_owned(),
+                                vec!["-c".to_owned(), value.to_owned()],
+                            )),
+                            "from-input" => Some(VarValue::Input(value.to_owned())),
+                            "from-input-or" => {
+                                if let Some((input, default)) = value.split_once(' ') {
+                                    Some(VarValue::InputOrDefault(
+                                        input.to_owned(),
+                                        default.to_owned(),
+                                    ))
+                                } else {
+                                    eprintln!(
+                                        "[WARN] Ignoring var from-input-or without default value)"
+                                    );
+                                    None
+                                }
+                            }
+                            mode => {
+                                eprintln!(
+                                    "[WARN] Ignoring var statement with unknown mode '{mode}'."
+                                );
+                                None
+                            }
+                        } {
+                            config.vars.insert(name.to_owned(), val);
+                        }
+                    } else {
+                        eprintln!("[WARN] Ignoring 'var' statement with only one space.");
+                    }
+                } else {
+                    eprintln!("[WARN] Ignoring bare 'var' statement.");
                 }
             }
             "allow" => config.allow = Some(right.to_owned()),

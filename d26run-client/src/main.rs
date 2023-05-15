@@ -1,21 +1,43 @@
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
+    path::Path,
 };
 
 fn main() {
-    let mut con = Con::init();
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut socket = "/tmp/d26run-socket".to_owned();
+    let args: Vec<_> = {
+        let mut args = std::env::args().skip(1);
+        loop {
+            if let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--socket" => {
+                        socket = args
+                            .next()
+                            .expect("--socket-path must be followed by another argument")
+                    }
+                    other if other.starts_with("-") => {
+                        eprintln!("Unknown argument '{other}'");
+                        std::process::exit(4);
+                    }
+                    _ => break [arg].into_iter().chain(args).collect(),
+                }
+            } else {
+                break vec![];
+            }
+        }
+    };
     if let Some(cmd) = args.get(0) {
-        match cmd.as_str() {
-            "run" => con.run(
+        let cmd = cmd.as_str();
+        match cmd {
+            "run" => Con::init(socket).run(
                 args.get(1)
                     .expect("run requires a second argument")
                     .as_str(),
                 args.iter().skip(2).filter_map(|v| v.split_once('=')),
             ),
-            "reload" => con.reload_configs(),
+            "reload" => Con::init(socket).reload_configs(),
             _ => eprintln!("unknown command, run without arguments for tldr."),
         }
     } else {
@@ -34,8 +56,8 @@ pub struct Con {
     client_dir: String,
 }
 impl Con {
-    pub fn init() -> Self {
-        let stream = std::os::unix::net::UnixStream::connect("/tmp/d26run-socket").unwrap();
+    pub fn init<P: AsRef<Path>>(addr: P) -> Self {
+        let stream = std::os::unix::net::UnixStream::connect(addr).unwrap();
         let mut o = Self {
             stream: BufReader::new(stream),
             id: 0,
@@ -86,6 +108,26 @@ impl Con {
         writeln!(self.w(), "auth done").unwrap();
         // wait for confirmation
         assert_eq!("auth accept", self.read_line().as_str());
+        // confirm that it was started
+        assert_eq!("run start", self.read_line().as_str());
+        // forward stdout/stderr
+        let mut what_byte = [0u8];
+        loop {
+            self.stream.read_exact(&mut what_byte).unwrap();
+            let what_byte = what_byte[0];
+            if what_byte == 0 {
+                break;
+            }
+            let stderr = what_byte & 128 != 0;
+            let len = what_byte & 127;
+            let mut buf = vec![0u8; len as _];
+            self.stream.read_exact(&mut buf[..]).unwrap();
+            if stderr {
+                std::io::stderr().write(&buf[..]).unwrap();
+            } else {
+                std::io::stdout().write(&buf[..]).unwrap();
+            }
+        }
     }
 }
 impl Drop for Con {

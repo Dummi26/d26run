@@ -2,11 +2,11 @@
 #![feature(fs_try_exists)]
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use std::{
     fs,
@@ -22,17 +22,47 @@ const DIR_CONFIGS: &'static str = "/etc/d26run/configs/";
 const DIR_ALLOWS: &'static str = "/etc/d26run/allow/";
 
 fn main() {
+    let mut test_mode = false;
+    let mut socket_path = "/tmp/d26run-socket".to_string();
+    {
+        let mut args = std::env::args().skip(1);
+        loop {
+            if let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--test-mode" => test_mode = true,
+                    "--socket-path" => {
+                        socket_path = args
+                            .next()
+                            .expect("--socket-path must be followed by another argument")
+                    }
+                    other /* if other.starts_with("-") */ => {
+                        eprintln!("[ERR!] Unknown argument '{other}'");
+                        std::process::exit(4);
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    }
+    if test_mode {
+        eprintln!("[INFO] test-mode enabled!");
+    }
+    eprintln!("[INFO] socket_path: {socket_path}");
     let min_duration_between_reloads = Duration::from_secs(15);
-    // remove previous socket and client directories
-    if let Ok(dir) = fs::read_dir("/tmp/") {
-        for entry in dir {
-            if let Ok(entry) = entry {
-                if let Ok(file_type) = entry.file_type() {
-                    if file_type.is_dir() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            if name.starts_with("d26run-client-") {
-                                fs::remove_dir_all(entry.path())
-                                    .expect("couldn't remove previous d26run-client-* directory.");
+    if !test_mode {
+        // remove previous socket and client directories
+        if let Ok(dir) = fs::read_dir("/tmp/") {
+            for entry in dir {
+                if let Ok(entry) = entry {
+                    if let Ok(file_type) = entry.file_type() {
+                        if file_type.is_dir() {
+                            if let Some(name) = entry.file_name().to_str() {
+                                if name.starts_with("d26run-client-") {
+                                    fs::remove_dir_all(entry.path()).expect(
+                                        "couldn't remove previous d26run-client-* directory.",
+                                    );
+                                }
                             }
                         }
                     }
@@ -40,20 +70,14 @@ fn main() {
             }
         }
     }
-    if let Ok(true) = fs::try_exists("/tmp/d26run-socket") {
-        fs::remove_file("/tmp/d26run-socket").unwrap();
+    if let Ok(true) = fs::try_exists(&socket_path) {
+        fs::remove_file(&socket_path).unwrap();
     }
-    // create the prep_dir with read/write access and no access for anyone else.
-    let prep_dir = "/tmp/d26run-prep/";
-    fs::create_dir_all(prep_dir).unwrap();
-    let mut perms = fs::metadata(prep_dir).unwrap().permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(prep_dir, perms).unwrap();
     // open the socket and chmod it
-    let listener = std::os::unix::net::UnixListener::bind("/tmp/d26run-socket").unwrap();
-    let mut socket_permissions = fs::metadata("/tmp/d26run-socket").unwrap().permissions();
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    let mut socket_permissions = fs::metadata(&socket_path).unwrap().permissions();
     socket_permissions.set_mode(0o666);
-    fs::set_permissions("/tmp/d26run-socket", socket_permissions).unwrap();
+    fs::set_permissions(&socket_path, socket_permissions).unwrap();
     // accept connections
     let mut current_id = 0;
     let mut config = Arc::new(config::init());
@@ -111,11 +135,163 @@ fn main() {
                                             match fs::try_exists(&auth_file) {
                                                 Ok(false) => {
                                                     writeln!(stream.get_mut(), "auth accept")?;
-                                                    match cfg.to_runcmd_with_vars(&vars) {
-                                                        Some(runcmd) => Runner::new(runcmd).start(),
-                                                        None => writeln!(
+                                                    match cfg.to_runcmd(&vars) {
+                                                        Ok(runcmd) => {
+                                                            let mut r = Runner::new(runcmd);
+                                                            writeln!(
+                                                                stream.get_mut(),
+                                                                "run start"
+                                                            )?;
+                                                            r.start();
+                                                            if let Some(child) =
+                                                                &mut r.child_process
+                                                            {
+                                                                /// If the thread returns Ok(()), the returned receiver was dropped or the reader reached EOF.
+                                                                fn thread_get_stdout<
+                                                                    S: Read + Send + 'static,
+                                                                >(
+                                                                    s: S,
+                                                                ) -> (
+                                                                    std::thread::JoinHandle<
+                                                                        Result<(), std::io::Error>,
+                                                                    >,
+                                                                    mpsc::Receiver<u8>,
+                                                                )
+                                                                {
+                                                                    let (so, out) = mpsc::channel();
+                                                                    (
+                                                                        std::thread::spawn(
+                                                                            move || {
+                                                                                let mut s =
+                                                                                    BufReader::new(
+                                                                                        s,
+                                                                                    );
+                                                                                let mut b = [0u8];
+                                                                                loop {
+                                                                                    if s.read(
+                                                                                        &mut b,
+                                                                                    )? == 0
+                                                                                    {
+                                                                                        break;
+                                                                                    };
+                                                                                    if so
+                                                                                        .send(b[0])
+                                                                                        .is_err()
+                                                                                    {
+                                                                                        break;
+                                                                                    }
+                                                                                }
+                                                                                Ok(())
+                                                                            },
+                                                                        ),
+                                                                        out,
+                                                                    )
+                                                                }
+                                                                let mut stdout = child
+                                                                    .stdout
+                                                                    .take()
+                                                                    .map(|s| thread_get_stdout(s));
+                                                                let mut stderr = child
+                                                                    .stderr
+                                                                    .take()
+                                                                    .map(|s| thread_get_stdout(s));
+                                                                loop {
+                                                                    let mut sent_anything = false;
+                                                                    let stdout_finished =
+                                                                        if let Some((t, r)) =
+                                                                            &mut stdout
+                                                                        {
+                                                                            let fin =
+                                                                                t.is_finished();
+                                                                            let mut buf =
+                                                                                Vec::new();
+                                                                            while let Ok(r) =
+                                                                                r.try_recv()
+                                                                            {
+                                                                                buf.push(r);
+                                                                                if buf.len() >= 120
+                                                                                {
+                                                                                    break;
+                                                                                }
+                                                                            }
+                                                                            if buf.len() > 1 {
+                                                                                let b =
+                                                                                    buf.len() as u8;
+                                                                                stream
+                                                                                    .get_mut()
+                                                                                    .write_all(
+                                                                                        &[b],
+                                                                                    )?;
+                                                                                stream
+                                                                                    .get_mut()
+                                                                                    .write_all(
+                                                                                        &buf,
+                                                                                    )?;
+                                                                                sent_anything =
+                                                                                    true;
+                                                                            }
+                                                                            fin
+                                                                        } else {
+                                                                            true
+                                                                        };
+                                                                    let stderr_finished =
+                                                                        if let Some((t, r)) =
+                                                                            &mut stderr
+                                                                        {
+                                                                            let fin =
+                                                                                t.is_finished();
+                                                                            let mut buf =
+                                                                                Vec::new();
+                                                                            while let Ok(r) =
+                                                                                r.try_recv()
+                                                                            {
+                                                                                buf.push(r);
+                                                                                if buf.len() >= 120
+                                                                                {
+                                                                                    break;
+                                                                                }
+                                                                            }
+                                                                            if buf.len() > 1 {
+                                                                                // 1st bit = 1 => stderr
+                                                                                let b = 128
+                                                                                    | buf.len()
+                                                                                        as u8;
+                                                                                stream
+                                                                                    .get_mut()
+                                                                                    .write_all(
+                                                                                        &[b],
+                                                                                    )?;
+                                                                                stream
+                                                                                    .get_mut()
+                                                                                    .write_all(
+                                                                                        &buf,
+                                                                                    )?;
+                                                                                sent_anything =
+                                                                                    true;
+                                                                            }
+                                                                            fin
+                                                                        } else {
+                                                                            true
+                                                                        };
+                                                                    if sent_anything {
+                                                                        stream.get_mut().flush()?;
+                                                                    }
+                                                                    if stdout_finished
+                                                                        && stderr_finished
+                                                                        && child.try_wait().is_ok()
+                                                                        && sent_anything == false
+                                                                    {
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            }
+                                                            stream.get_mut().write(&[0])?;
+                                                            stream.get_mut().flush()?;
+                                                        }
+                                                        Err(err) => writeln!(
                                                             stream.get_mut(),
-                                                            "run error_invalid_config"
+                                                            "run error_invalid_config: {}",
+                                                            err.to_string().replace("\n", "\\n"),
                                                         )?,
                                                     }
                                                 }
@@ -146,7 +322,7 @@ fn main() {
                     }
                     line.clear();
                 }
-                eprintln!("disconnected [{id}].");
+                eprintln!("[INFO] disconnected [{id}].");
                 Ok::<u32, std::io::Error>(id)
             });
         }
