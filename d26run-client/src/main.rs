@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     fs,
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
@@ -7,6 +8,7 @@ use std::{
 
 fn main() {
     let mut socket = "/tmp/d26run-socket".to_owned();
+    let mut mode = None;
     let args: Vec<_> = {
         let mut args = std::env::args().skip(1);
         loop {
@@ -16,6 +18,21 @@ fn main() {
                         socket = args
                             .next()
                             .expect("--socket-path must be followed by another argument")
+                    }
+                    "--mode" => {
+                        mode = Some(
+                            match args
+                                .next()
+                                .expect("--mode must be followed by a mode")
+                                .to_lowercase()
+                                .as_str()
+                            {
+                                "wait" => RunMode::Wait,
+                                "detach" => RunMode::Detach,
+                                "output" => RunMode::ForwardOutput,
+                                _ => panic!("--mode must be followed by wait, detach, or output."),
+                            },
+                        )
                     }
                     other if other.starts_with("-") => {
                         eprintln!("Unknown argument '{other}'");
@@ -36,6 +53,7 @@ fn main() {
                     .expect("run requires a second argument")
                     .as_str(),
                 args.iter().skip(2).filter_map(|v| v.split_once('=')),
+                mode,
             ),
             "reload" => Con::init(socket).reload_configs(),
             _ => eprintln!("unknown command, run without arguments for tldr."),
@@ -47,6 +65,22 @@ fn main() {
     reload => request that the server reloads all configurations. might not have an effect immedeately (rate limit)
 "
         )
+    }
+}
+
+pub enum RunMode {
+    Detach,
+    Wait,
+    ForwardOutput,
+}
+
+impl Display for RunMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Detach => write!(f, "detach"),
+            Self::Wait => write!(f, "wait"),
+            Self::ForwardOutput => write!(f, "forward-output"),
+        }
     }
 }
 
@@ -89,7 +123,7 @@ impl Con {
         writeln!(self.w(), "reload-configs").unwrap();
         assert_eq!("reload-configs requested", self.read_line().as_str());
     }
-    pub fn run<'a, V>(&mut self, config: &'a str, vars: V)
+    pub fn run<'a, V>(&mut self, config: &'a str, vars: V, mode: Option<RunMode>)
     where
         V: Iterator<Item = (&'a str, &'a str)>,
     {
@@ -100,7 +134,11 @@ impl Con {
             }
         }
         // ask to run
-        writeln!(self.w(), "run {config}").unwrap();
+        if let Some(mode) = mode {
+            writeln!(self.w(), "run mode={mode} {config}").unwrap();
+        } else {
+            writeln!(self.w(), "run {config}").unwrap();
+        }
         // wait until auth is ready
         assert_eq!("auth wait", self.read_line().as_str());
         // authenticate (via file permissions)

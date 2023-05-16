@@ -124,7 +124,48 @@ fn main() {
                                 vars.insert(varname.to_owned(), value.to_owned());
                             }
                         }
-                        ("run", runcfg) => {
+                        ("run", runcfg) => 'run: {
+                            let mut forward_output = false;
+                            // TODO! detach
+                            let mut detach = false;
+                            let runcfg = if let Some((args, runcfg)) = runcfg.split_once(' ') {
+                                for arg in args.split(',') {
+                                    let (arg, val) = if let Some((arg, val)) = arg.split_once('=') {
+                                        (arg, Some(val))
+                                    } else {
+                                        (arg, None)
+                                    };
+                                    match arg {
+                                        "mode" => {
+                                            if let Some(val) = val {
+                                                (detach, forward_output) = match val {
+                                                    "detach" => (true, false),
+                                                    "wait" => (false, false),
+                                                    "forward-output" => (false, true),
+                                                    _ => break 'run writeln!(
+                                                        stream.get_mut(),
+                                                        "run error_arg_value_invalid {arg} {val} // try detach, wait, or forward-output. wait is default."
+                                                    )?,
+                                                }
+                                            } else {
+                                                break 'run writeln!(
+                                                    stream.get_mut(),
+                                                    "run error_arg_no_value {arg}"
+                                                )?;
+                                            }
+                                        }
+                                        _ => {
+                                            break 'run writeln!(
+                                                stream.get_mut(),
+                                                "run error_invalid_arg {arg}"
+                                            )?
+                                        }
+                                    }
+                                }
+                                runcfg
+                            } else {
+                                runcfg
+                            };
                             if let Some(cfg) = config.run_cmds.get(runcfg) {
                                 if let Some(allow) = &cfg.allow {
                                     let auth_file = format!("{client_dir}auth");
@@ -143,145 +184,179 @@ fn main() {
                                                                 "run start"
                                                             )?;
                                                             r.start();
-                                                            if let Some(child) =
-                                                                &mut r.child_process
-                                                            {
-                                                                /// If the thread returns Ok(()), the returned receiver was dropped or the reader reached EOF.
-                                                                fn thread_get_stdout<
-                                                                    S: Read + Send + 'static,
-                                                                >(
-                                                                    s: S,
-                                                                ) -> (
-                                                                    std::thread::JoinHandle<
-                                                                        Result<(), std::io::Error>,
-                                                                    >,
-                                                                    mpsc::Receiver<u8>,
-                                                                )
+                                                            if !detach {
+                                                                if let Some(child) =
+                                                                    &mut r.child_process
                                                                 {
-                                                                    let (so, out) = mpsc::channel();
-                                                                    (
-                                                                        std::thread::spawn(
-                                                                            move || {
-                                                                                let mut s =
+                                                                    if !forward_output {
+                                                                        _ = child.wait();
+                                                                    } else {
+                                                                        /// If the thread returns Ok(()), the returned receiver was dropped or the reader reached EOF.
+                                                                        fn thread_get_stdout<
+                                                                            S: Read + Send + 'static,
+                                                                        >(
+                                                                            s: S,
+                                                                        ) -> (
+                                                                            std::thread::JoinHandle<
+                                                                                Result<
+                                                                                    (),
+                                                                                    std::io::Error,
+                                                                                >,
+                                                                            >,
+                                                                            mpsc::Receiver<u8>,
+                                                                        )
+                                                                        {
+                                                                            let (so, out) =
+                                                                                mpsc::channel();
+                                                                            (
+                                                                                std::thread::spawn(
+                                                                                    move || {
+                                                                                        let mut s =
                                                                                     BufReader::new(
                                                                                         s,
                                                                                     );
-                                                                                let mut b = [0u8];
-                                                                                loop {
-                                                                                    if s.read(
-                                                                                        &mut b,
-                                                                                    )? == 0
-                                                                                    {
-                                                                                        break;
-                                                                                    };
-                                                                                    if so
+                                                                                        let mut b =
+                                                                                            [0u8];
+                                                                                        loop {
+                                                                                            if s.read(
+                                                                                            &mut b,
+                                                                                        )? == 0
+                                                                                        {
+                                                                                            break;
+                                                                                        };
+                                                                                            if so
                                                                                         .send(b[0])
                                                                                         .is_err()
                                                                                     {
                                                                                         break;
                                                                                     }
-                                                                                }
-                                                                                Ok(())
-                                                                            },
-                                                                        ),
-                                                                        out,
-                                                                    )
-                                                                }
-                                                                let mut stdout = child
-                                                                    .stdout
-                                                                    .take()
-                                                                    .map(|s| thread_get_stdout(s));
-                                                                let mut stderr = child
-                                                                    .stderr
-                                                                    .take()
-                                                                    .map(|s| thread_get_stdout(s));
-                                                                loop {
-                                                                    let mut sent_anything = false;
-                                                                    let stdout_finished =
-                                                                        if let Some((t, r)) =
-                                                                            &mut stdout
-                                                                        {
-                                                                            let fin =
-                                                                                t.is_finished();
-                                                                            let mut buf =
-                                                                                Vec::new();
-                                                                            while let Ok(r) =
-                                                                                r.try_recv()
-                                                                            {
-                                                                                buf.push(r);
-                                                                                if buf.len() >= 120
+                                                                                        }
+                                                                                        Ok(())
+                                                                                    },
+                                                                                ),
+                                                                                out,
+                                                                            )
+                                                                        }
+                                                                        let mut stdout = child
+                                                                            .stdout
+                                                                            .take()
+                                                                            .map(|s| {
+                                                                                thread_get_stdout(s)
+                                                                            });
+                                                                        let mut stderr = child
+                                                                            .stderr
+                                                                            .take()
+                                                                            .map(|s| {
+                                                                                thread_get_stdout(s)
+                                                                            });
+                                                                        loop {
+                                                                            let mut sent_anything =
+                                                                                false;
+                                                                            let stdout_finished =
+                                                                                if let Some((
+                                                                                    t,
+                                                                                    r,
+                                                                                )) = &mut stdout
                                                                                 {
-                                                                                    break;
-                                                                                }
-                                                                            }
-                                                                            if buf.len() > 1 {
-                                                                                let b =
-                                                                                    buf.len() as u8;
-                                                                                stream
-                                                                                    .get_mut()
-                                                                                    .write_all(
-                                                                                        &[b],
-                                                                                    )?;
-                                                                                stream
-                                                                                    .get_mut()
-                                                                                    .write_all(
-                                                                                        &buf,
-                                                                                    )?;
-                                                                                sent_anything =
-                                                                                    true;
-                                                                            }
-                                                                            fin
-                                                                        } else {
-                                                                            true
-                                                                        };
-                                                                    let stderr_finished =
-                                                                        if let Some((t, r)) =
-                                                                            &mut stderr
-                                                                        {
-                                                                            let fin =
-                                                                                t.is_finished();
-                                                                            let mut buf =
-                                                                                Vec::new();
-                                                                            while let Ok(r) =
-                                                                                r.try_recv()
-                                                                            {
-                                                                                buf.push(r);
-                                                                                if buf.len() >= 120
+                                                                                    let fin =
+                                                                                    t.is_finished();
+                                                                                    let mut buf =
+                                                                                        Vec::new();
+                                                                                    while let Ok(
+                                                                                        r,
+                                                                                    ) =
+                                                                                        r.try_recv()
+                                                                                    {
+                                                                                        buf.push(r);
+                                                                                        if buf.len()
+                                                                                            >= 120
+                                                                                        {
+                                                                                            break;
+                                                                                        }
+                                                                                    }
+                                                                                    if buf.len() > 1
+                                                                                    {
+                                                                                        let b = buf
+                                                                                            .len()
+                                                                                            as u8;
+                                                                                        stream
+                                                                                        .get_mut()
+                                                                                        .write_all(
+                                                                                            &[b],
+                                                                                        )?;
+                                                                                        stream
+                                                                                        .get_mut()
+                                                                                        .write_all(
+                                                                                            &buf,
+                                                                                        )?;
+                                                                                        sent_anything =
+                                                                                        true;
+                                                                                    }
+                                                                                    fin
+                                                                                } else {
+                                                                                    true
+                                                                                };
+                                                                            let stderr_finished =
+                                                                                if let Some((
+                                                                                    t,
+                                                                                    r,
+                                                                                )) = &mut stderr
                                                                                 {
-                                                                                    break;
-                                                                                }
-                                                                            }
-                                                                            if buf.len() > 1 {
-                                                                                // 1st bit = 1 => stderr
-                                                                                let b = 128
-                                                                                    | buf.len()
-                                                                                        as u8;
+                                                                                    let fin =
+                                                                                    t.is_finished();
+                                                                                    let mut buf =
+                                                                                        Vec::new();
+                                                                                    while let Ok(
+                                                                                        r,
+                                                                                    ) =
+                                                                                        r.try_recv()
+                                                                                    {
+                                                                                        buf.push(r);
+                                                                                        if buf.len()
+                                                                                            >= 120
+                                                                                        {
+                                                                                            break;
+                                                                                        }
+                                                                                    }
+                                                                                    if buf.len() > 1
+                                                                                    {
+                                                                                        // 1st bit = 1 => stderr
+                                                                                        let b = 128
+                                                                                        | buf.len()
+                                                                                            as u8;
+                                                                                        stream
+                                                                                        .get_mut()
+                                                                                        .write_all(
+                                                                                            &[b],
+                                                                                        )?;
+                                                                                        stream
+                                                                                        .get_mut()
+                                                                                        .write_all(
+                                                                                            &buf,
+                                                                                        )?;
+                                                                                        sent_anything =
+                                                                                        true;
+                                                                                    }
+                                                                                    fin
+                                                                                } else {
+                                                                                    true
+                                                                                };
+                                                                            if sent_anything {
                                                                                 stream
                                                                                     .get_mut()
-                                                                                    .write_all(
-                                                                                        &[b],
-                                                                                    )?;
-                                                                                stream
-                                                                                    .get_mut()
-                                                                                    .write_all(
-                                                                                        &buf,
-                                                                                    )?;
-                                                                                sent_anything =
-                                                                                    true;
+                                                                                    .flush()?;
                                                                             }
-                                                                            fin
-                                                                        } else {
-                                                                            true
-                                                                        };
-                                                                    if sent_anything {
-                                                                        stream.get_mut().flush()?;
-                                                                    }
-                                                                    if stdout_finished
-                                                                        && stderr_finished
-                                                                        && child.try_wait().is_ok()
-                                                                        && sent_anything == false
-                                                                    {
-                                                                        break;
+                                                                            if stdout_finished
+                                                                                && stderr_finished
+                                                                                && child
+                                                                                    .try_wait()
+                                                                                    .is_ok()
+                                                                                && sent_anything
+                                                                                    == false
+                                                                            {
+                                                                                break;
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -305,10 +380,16 @@ fn main() {
                                                 )?,
                                             }
                                         } else {
-                                            break;
+                                            writeln!(
+                                                stream.get_mut(),
+                                                "unexpected_response auth done"
+                                            )?;
                                         }
                                     } else {
-                                        writeln!(stream.get_mut(), "auth fail")?;
+                                        writeln!(
+                                            stream.get_mut(),
+                                            "auth fail could_not_copy_auth_file"
+                                        )?;
                                     }
                                 } else {
                                     writeln!(stream.get_mut(), "auth deny error_undefined_allow")?;
