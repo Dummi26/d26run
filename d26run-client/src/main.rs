@@ -1,9 +1,12 @@
 use std::{
+    eprintln,
     fmt::Display,
     fs,
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
     path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 fn main() {
@@ -30,6 +33,7 @@ fn main() {
                                 "wait" => RunMode::Wait,
                                 "detach" => RunMode::Detach,
                                 "output" => RunMode::ForwardOutput,
+                                "interactive" => RunMode::ForwardInputOutput,
                                 _ => panic!("--mode must be followed by wait, detach, or output."),
                             },
                         )
@@ -56,6 +60,13 @@ fn main() {
                 mode,
             ),
             "reload" => Con::init(socket).reload_configs(),
+            "list" => {
+                let cfgs = Con::init(socket).list();
+                println!("configs: {}", cfgs.len());
+                for cfg in cfgs {
+                    println!("{} ({})", cfg.0, cfg.1);
+                }
+            }
             _ => eprintln!("unknown command, run without arguments for tldr."),
         }
     } else {
@@ -72,6 +83,7 @@ pub enum RunMode {
     Detach,
     Wait,
     ForwardOutput,
+    ForwardInputOutput,
 }
 
 impl Display for RunMode {
@@ -80,12 +92,13 @@ impl Display for RunMode {
             Self::Detach => write!(f, "detach"),
             Self::Wait => write!(f, "wait"),
             Self::ForwardOutput => write!(f, "forward-output"),
+            Self::ForwardInputOutput => write!(f, "forward-output-input"),
         }
     }
 }
 
 pub struct Con {
-    stream: BufReader<UnixStream>,
+    stream: Arc<Mutex<BufReader<UnixStream>>>,
     id: usize,
     client_dir: String,
 }
@@ -93,7 +106,7 @@ impl Con {
     pub fn init<P: AsRef<Path>>(addr: P) -> Self {
         let stream = std::os::unix::net::UnixStream::connect(addr).unwrap();
         let mut o = Self {
-            stream: BufReader::new(stream),
+            stream: Arc::new(Mutex::new(BufReader::new(stream))),
             id: 0,
             client_dir: String::new(),
         };
@@ -107,20 +120,35 @@ impl Con {
         fs::create_dir(&self.client_dir).unwrap();
     }
     /// write
-    fn w(&mut self) -> &mut UnixStream {
-        self.stream.get_mut()
+    fn w(&self) -> std::sync::MutexGuard<BufReader<UnixStream>> {
+        let o = self.stream.lock().unwrap();
+        o
     }
     fn read_line(&mut self) -> String {
         let mut buf = String::new();
-        self.stream.read_line(&mut buf).unwrap();
+        self.w().read_line(&mut buf).unwrap();
         if buf.ends_with('\n') {
             buf.pop();
         }
         buf
     }
+    pub fn list(&mut self) -> Vec<(String, String)> {
+        writeln!(self.w().get_mut(), "list-configs").unwrap();
+        let response = self.read_line();
+        assert!(response.starts_with("listing configs; count: "));
+        let count = response["listing configs; count: ".len()..]
+            .trim()
+            .parse()
+            .unwrap();
+        let mut o = Vec::with_capacity(count);
+        for _ in 0..count {
+            o.push((self.read_line(), self.read_line()));
+        }
+        o
+    }
     pub fn reload_configs(&mut self) {
         // ask to reload
-        writeln!(self.w(), "reload-configs").unwrap();
+        writeln!(self.w().get_mut(), "reload-configs").unwrap();
         assert_eq!("reload-configs requested", self.read_line().as_str());
     }
     pub fn run<'a, V>(&mut self, config: &'a str, vars: V, mode: Option<RunMode>)
@@ -130,42 +158,96 @@ impl Con {
         // set vars
         for (var_name, var_value) in vars {
             if !var_name.contains(' ') {
-                writeln!(self.w(), "set-var {var_name} {var_value}").unwrap();
+                writeln!(self.w().get_mut(), "set-var {var_name} {var_value}").unwrap();
             }
         }
         // ask to run
-        if let Some(mode) = mode {
-            writeln!(self.w(), "run mode={mode} {config}").unwrap();
+        if let Some(mode) = &mode {
+            writeln!(self.w().get_mut(), "run mode={mode} {config}").unwrap();
         } else {
-            writeln!(self.w(), "run {config}").unwrap();
+            writeln!(self.w().get_mut(), "run {config}").unwrap();
         }
         // wait until auth is ready
         assert_eq!("auth wait", self.read_line().as_str());
         // authenticate (via file permissions)
         fs::remove_file(format!("{}auth", self.client_dir).as_str()).unwrap();
-        writeln!(self.w(), "auth done").unwrap();
+        writeln!(self.w().get_mut(), "auth done").unwrap();
         // wait for confirmation
         assert_eq!("auth accept", self.read_line().as_str());
         // confirm that it was started
-        assert_eq!("run start", self.read_line().as_str());
-        // forward stdout/stderr
-        let mut what_byte = [0u8];
-        loop {
-            self.stream.read_exact(&mut what_byte).unwrap();
-            let what_byte = what_byte[0];
-            if what_byte == 0 {
-                break;
-            }
-            let stderr = what_byte & 128 != 0;
-            let len = what_byte & 127;
-            let mut buf = vec![0u8; len as _];
-            self.stream.read_exact(&mut buf[..]).unwrap();
-            if stderr {
-                std::io::stderr().write(&buf[..]).unwrap();
-            } else {
-                std::io::stdout().write(&buf[..]).unwrap();
+        match self.read_line().as_str() {
+            "run start" => (),
+            err => {
+                if err.starts_with("run error_invalid_config: ") {
+                    let err_count = err["run error_invalid_config: ".len()..]
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    for i in 0..err_count {
+                        let err_len = self.read_line().parse().unwrap();
+                        for _ in 0..err_len {
+                            eprintln!("{} | {}", i + 1, self.read_line());
+                        }
+                    }
+                    panic!("couldn't run - there were {} errors.", err_count);
+                }
             }
         }
+        // forward stdin
+        let fwd_stdin = if let Some(RunMode::ForwardInputOutput) = &mode {
+            true
+        } else {
+            false
+        };
+        std::thread::scope(move |s| {
+            if fwd_stdin {
+                s.spawn(|| {
+                    let mut stdin = std::io::stdin().lock();
+                    let mut buf = [0];
+                    loop {
+                        stdin.read_exact(&mut buf).unwrap();
+                        eprintln!("sending byte {}", buf[0]);
+                        self.w().get_mut().write_all(&buf).unwrap();
+                    }
+                });
+            }
+            // forward stdout/stderr
+            let mut what_byte = [0u8];
+            self.w()
+                .get_mut()
+                .set_read_timeout(Some(Duration::from_secs_f32(0.05)))
+                .unwrap();
+            loop {
+                if fwd_stdin {
+                    std::thread::sleep(Duration::from_secs_f32(0.1));
+                }
+                {
+                    if let Ok(1) = self.w().read(&mut what_byte) {
+                    } else {
+                        continue;
+                    }
+                }
+                let what_byte = what_byte[0];
+                if what_byte == 0 {
+                    break;
+                }
+                let stderr = what_byte & 128 != 0;
+                let len = what_byte & 127;
+                let mut buf = vec![0u8; len as _];
+                {
+                    self.w().read_exact(&mut buf[..]).unwrap();
+                }
+                if stderr {
+                    std::io::stderr().write(&buf[..]).unwrap();
+                } else {
+                    std::io::stdout().write(&buf[..]).unwrap();
+                }
+            }
+            self.w()
+                .get_mut()
+                .shutdown(std::net::Shutdown::Both)
+                .unwrap();
+        });
     }
 }
 impl Drop for Con {

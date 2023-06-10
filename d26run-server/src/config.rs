@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fs};
 
 use crate::{
-    run::{RunCmdBuilder, VarValue},
+    run::{RunCmdBuilder, ToRunCmdInfo, VarValue},
     DIR_CONFIGS,
 };
 
@@ -22,23 +22,33 @@ pub fn init() -> Config {
                     if let Ok(file_type) = e.file_type() {
                         if file_type.is_file() {
                             if let Some(name) = file_name.to_str() {
+                                eprintln!("[INFO] Now parsing {name}.");
                                 let mut runcmd = RunCmdBuilder::default();
                                 if let Err(err) = runcmd_from_file(name, &mut runcmd) {
                                     eprintln!(
                                         "[WARN] Skipping file '{}' due to parse error: {err:?}",
                                         name
                                     )
-                                }
-                                match runcmd.verify() {
-                                    Ok(()) => {
-                                        eprintln!("[INFO]     added run_cmd {name}");
-                                        run_cmds.insert(name.to_owned(), runcmd);
+                                } else {
+                                    let (non_fatal, out) =
+                                        runcmd.verify(&ToRunCmdInfo { con_id: 0 });
+                                    for e in non_fatal {
+                                        eprintln!("[INFO]     non-fatal: {e}");
                                     }
-                                    Err(err) => {
-                                        eprintln!(
-                                            "[WARN] Skipping file '{}' due to error:\n    {err:?}",
-                                            name
-                                        )
+                                    match out {
+                                        Ok(()) => {
+                                            eprintln!("[INFO]    + added run_cmd {name}");
+                                            run_cmds.insert(name.to_owned(), runcmd);
+                                        }
+                                        Err(err) => {
+                                            for e in err {
+                                                eprintln!("[INFO]     ! fatal !: {e}");
+                                            }
+                                            eprintln!(
+                                                "[WARN] Skipping file '{}' due to error.",
+                                                name
+                                            )
+                                        }
                                     }
                                 }
                             } else {
@@ -72,20 +82,40 @@ pub fn init() -> Config {
 
 pub fn runcmd_from_file(name: &str, config: &mut RunCmdBuilder) -> Result<(), ConfigFromFileError> {
     let file = std::fs::read_to_string(format!("{DIR_CONFIGS}{name}"))?;
-    for line in file.lines() {
+    runcmd_from_lines(name, config, &mut file.lines().map(|v| v.to_owned()))
+}
+pub fn runcmd_from_lines<L: Iterator<Item = String>>(
+    name: &str,
+    config: &mut RunCmdBuilder,
+    lines: &mut L,
+) -> Result<(), ConfigFromFileError> {
+    loop {
+        let line = if let Some(l) = lines.next() {
+            l
+        } else {
+            break;
+        };
         let (left, right) = if let Some((left, right)) = line.split_once(' ') {
             (left, right)
         } else {
-            (line, "")
+            (line.as_str(), "")
         };
         match left {
             // comments or empty lines
             s if s.is_empty() || s.starts_with('#') || s.starts_with("//") => (),
-            "config" => runcmd_from_file(right, config)?,
+            "end" => break,
+            "config" => {
+                runcmd_from_file(right, config)?;
+            }
             "var" => {
                 if let Some((name, value)) = right.split_once(' ') {
-                    if let Some((mode, value)) = value.split_once(' ') {
-                        if let Some(val) = match mode {
+                    fn get_var_val(name: &str, value: &str) -> Option<VarValue> {
+                        let (mode, value) = if let Some(v) = value.split_once(' ') {
+                            v
+                        } else {
+                            (value, "")
+                        };
+                        match mode {
                             "set" => Some(VarValue::Val(value.to_owned())),
                             "from-cmd" => Some(VarValue::OutputOf(value.to_owned(), vec![])),
                             "from-cmd-sh" => Some(VarValue::OutputOf(
@@ -97,7 +127,7 @@ pub fn runcmd_from_file(name: &str, config: &mut RunCmdBuilder) -> Result<(), Co
                                 if let Some((input, default)) = value.split_once(' ') {
                                     Some(VarValue::InputOrDefault(
                                         input.to_owned(),
-                                        default.to_owned(),
+                                        Box::new(VarValue::Val(default.to_owned())),
                                     ))
                                 } else {
                                     eprintln!(
@@ -106,64 +136,91 @@ pub fn runcmd_from_file(name: &str, config: &mut RunCmdBuilder) -> Result<(), Co
                                     None
                                 }
                             }
+                            "from-input-or-else" => {
+                                if let Some((input, default)) = value.split_once(' ') {
+                                    Some(VarValue::InputOrDefault(
+                                        input.to_owned(),
+                                        Box::new(get_var_val(
+                                            &(name.to_owned() + " / default"),
+                                            default,
+                                        )?),
+                                    ))
+                                } else {
+                                    eprintln!(
+                                        "[WARN] Ignoring var from-input-or without default value)"
+                                    );
+                                    None
+                                }
+                            }
+                            "con-id" => Some(VarValue::ConId),
                             mode => {
                                 eprintln!(
                                     "[WARN] Ignoring var statement with unknown mode '{mode}'."
                                 );
                                 None
                             }
-                        } {
-                            config.vars.insert(name.to_owned(), val);
                         }
-                    } else {
-                        eprintln!("[WARN] Ignoring 'var' statement with only one space.");
+                    }
+                    if let Some(val) = get_var_val(name, value) {
+                        config.vars.insert(name.to_owned(), val);
                     }
                 } else {
                     eprintln!("[WARN] Ignoring bare 'var' statement.");
                 }
             }
             "allow" => config.allow = Some(right.to_owned()),
+            "cmd-prep" => config.command_prep.push({
+                let mut cfg = RunCmdBuilder::default();
+                runcmd_from_lines(&format!("{name}/prep"), &mut cfg, lines)?;
+                cfg
+            }),
+            "cmd-clean" => config.command_clean.push({
+                let mut cfg = RunCmdBuilder::default();
+                runcmd_from_lines(&format!("{name}/prep"), &mut cfg, lines)?;
+                cfg
+            }),
             "command" => config.command = Some(right.to_owned()),
-            "args_clear" => config.args.clear(),
-            "arg_add" => config.args.push(right.to_owned()),
-            "user_inherit" => config.user = Some(None),
-            "user_id" => {
-                config.user = Some(Some(if let Ok(v) = right.parse() {
+            "args-clear" => config.args.clear(),
+            "arg" => config.args.push(right.to_owned()),
+            "uid" => {
+                config.user = Some(Ok(if let Ok(v) = right.parse() {
                     v
                 } else {
                     return Err(ConfigFromFileError::CouldNotParseId(right.to_owned()));
                 }))
             }
-            "group_inherit" => config.group = Some(None),
-            "group_id" => {
-                config.group = Some(Some(if let Ok(v) = right.parse() {
+            "user" => config.user = Some(Err(right.to_owned())),
+            "gid" => {
+                config.group = Some(Ok(if let Ok(v) = right.parse() {
                     v
                 } else {
                     return Err(ConfigFromFileError::CouldNotParseId(right.to_owned()));
                 }))
             }
-            "groups_clear" => config.groups.clear(),
-            "group_add" => config.groups.push(if let Ok(v) = right.parse() {
-                v
+            "group" => config.group = Some(Err(right.to_owned())),
+            "g-clear" => config.groups.clear(),
+            "g+gid" => config.groups.push(if let Ok(v) = right.parse() {
+                Ok(v)
             } else {
                 return Err(ConfigFromFileError::CouldNotParseId(right.to_owned()));
             }),
-            "env_clear" => config.env.clear(),
-            "env_add" => config
+            "g+group" => config.groups.push(Err(right.to_owned())),
+            "env-clear" => config.env.clear(),
+            "env+set" => config
                 .env
                 .push(if let Some((name, value)) = right.split_once("=") {
                     (name.into(), Ok(value.into()))
                 } else {
                     return Err(ConfigFromFileError::EnvAddWrongSyntax(right.to_owned()));
                 }),
-            "env_inherit" => {
+            "env+inherit" => {
                 if let Some((right, default)) = right.split_once("=") {
                     config.env.push((right.into(), Err(Some(default.into()))));
                 } else {
                     config.env.push((right.into(), Err(None)));
                 }
             }
-            "working_dir" => config.working_dir = Some(right.to_owned()),
+            "working-dir" => config.working_dir = Some(right.to_owned()),
             v => return Err(ConfigFromFileError::UnknownStatement(v.to_owned())),
         }
     }

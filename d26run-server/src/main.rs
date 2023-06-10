@@ -13,7 +13,7 @@ use std::{
     io::{BufRead, BufReader},
 };
 
-use crate::run::Runner;
+use crate::run::{Runner, ToRunCmdInfo};
 
 mod config;
 mod run;
@@ -79,7 +79,7 @@ fn main() {
     socket_permissions.set_mode(0o666);
     fs::set_permissions(&socket_path, socket_permissions).unwrap();
     // accept connections
-    let mut current_id = 0;
+    let mut current_id = 0u128;
     let mut config = Arc::new(config::init());
     let mut last_reload = Instant::now();
     let please_reload = Arc::new(AtomicBool::new(false));
@@ -104,7 +104,7 @@ fn main() {
                 let mut line = String::new();
                 let mut vars = HashMap::new();
                 loop {
-                    stream.read_line(&mut line).unwrap();
+                    stream.read_line(&mut line)?;
                     if line.is_empty() {
                         break;
                     }
@@ -115,6 +115,24 @@ fn main() {
                     };
                     match (command.trim(), args.trim_end_newline()) {
                         // ("open", file) => {}
+                        ("list-configs", _) => {
+                            writeln!(
+                                stream.get_mut(),
+                                "listing configs; count: {}",
+                                config.run_cmds.len()
+                            )?;
+                            for (name, cfg) in config.run_cmds.iter() {
+                                writeln!(stream.get_mut(), "{name}")?;
+                                writeln!(
+                                    stream.get_mut(),
+                                    "{}",
+                                    match &cfg.allow {
+                                        Some(v) => v,
+                                        None => "",
+                                    }
+                                )?;
+                            }
+                        }
                         ("reload-configs", _) => {
                             please_reload.store(true, std::sync::atomic::Ordering::Relaxed);
                             writeln!(stream.get_mut(), "reload-configs requested")?;
@@ -126,8 +144,8 @@ fn main() {
                         }
                         ("run", runcfg) => 'run: {
                             let mut forward_output = false;
-                            // TODO! detach
                             let mut detach = false;
+                            let mut forward_input = false;
                             let runcfg = if let Some((args, runcfg)) = runcfg.split_once(' ') {
                                 for arg in args.split(',') {
                                     let (arg, val) = if let Some((arg, val)) = arg.split_once('=') {
@@ -138,13 +156,14 @@ fn main() {
                                     match arg {
                                         "mode" => {
                                             if let Some(val) = val {
-                                                (detach, forward_output) = match val {
-                                                    "detach" => (true, false),
-                                                    "wait" => (false, false),
-                                                    "forward-output" => (false, true),
+                                                (detach, forward_output, forward_input) = match val {
+                                                    "detach" => (true, false, false),
+                                                    "wait" => (false, false, false),
+                                                    "forward-output" => (false, true, false),
+                                                    "forward-output-input" => (false, true, true),
                                                     _ => break 'run writeln!(
                                                         stream.get_mut(),
-                                                        "run error_arg_value_invalid {arg} {val} // try detach, wait, or forward-output. wait is default."
+                                                        "run error_arg_value_invalid {arg} {val} // try detach, wait, forward-output or forward-output-input. wait is default."
                                                     )?,
                                                 }
                                             } else {
@@ -176,20 +195,26 @@ fn main() {
                                             match fs::try_exists(&auth_file) {
                                                 Ok(false) => {
                                                     writeln!(stream.get_mut(), "auth accept")?;
-                                                    match cfg.to_runcmd(&vars) {
+                                                    let info = ToRunCmdInfo { con_id: id };
+                                                    match cfg.to_runcmd(&vars, &info) {
                                                         Ok(runcmd) => {
-                                                            let mut r = Runner::new(runcmd);
                                                             writeln!(
                                                                 stream.get_mut(),
                                                                 "run start"
                                                             )?;
+                                                            stream.get_mut().flush()?;
+                                                            let mut r = Runner::new(runcmd);
                                                             r.start();
-                                                            if !detach {
+                                                            if detach {
+                                                                std::thread::spawn(move || {
+                                                                    r.wait()
+                                                                });
+                                                            } else {
                                                                 if let Some(child) =
                                                                     &mut r.child_process
                                                                 {
                                                                     if !forward_output {
-                                                                        _ = child.wait();
+                                                                        r.wait();
                                                                     } else {
                                                                         /// If the thread returns Ok(()), the returned receiver was dropped or the reader reached EOF.
                                                                         fn thread_get_stdout<
@@ -249,6 +274,15 @@ fn main() {
                                                                             .map(|s| {
                                                                                 thread_get_stdout(s)
                                                                             });
+                                                                        if forward_input {
+                                                                            stream
+                                                                            .get_mut()
+                                                                            .set_read_timeout(Some(
+                                                                            Duration::from_secs_f32(
+                                                                                0.1,
+                                                                            ),
+                                                                        ))?;
+                                                                        }
                                                                         loop {
                                                                             let mut sent_anything =
                                                                                 false;
@@ -341,6 +375,34 @@ fn main() {
                                                                                 } else {
                                                                                     true
                                                                                 };
+                                                                            if forward_input {
+                                                                                if let Some(stdin) =
+                                                                                    &mut child.stdin
+                                                                                {
+                                                                                    let mut w =
+                                                                                        false;
+                                                                                    loop {
+                                                                                        let mut b =
+                                                                                            [0];
+                                                                                        if let Ok(1) = stream
+                                                                                            .read(
+                                                                                            &mut b,
+                                                                                        )
+                                                                                        {
+                                                                                            _ = stdin.write_all(&b);
+                                                                                            w = true;
+                                                                                        } else {
+                                                                                            break;
+                                                                                        }
+                                                                                    }
+                                                                                    if w {
+                                                                                        eprintln!("wrote some bytes to child's stdin.");
+                                                                                        _ = stdin
+                                                                                            .flush(
+                                                                                            );
+                                                                                    }
+                                                                                }
+                                                                            }
                                                                             if sent_anything {
                                                                                 stream
                                                                                     .get_mut()
@@ -354,6 +416,7 @@ fn main() {
                                                                                 && sent_anything
                                                                                     == false
                                                                             {
+                                                                                r.wait();
                                                                                 break;
                                                                             }
                                                                         }
@@ -363,11 +426,30 @@ fn main() {
                                                             stream.get_mut().write(&[0])?;
                                                             stream.get_mut().flush()?;
                                                         }
-                                                        Err(err) => writeln!(
-                                                            stream.get_mut(),
-                                                            "run error_invalid_config: {}",
-                                                            err.to_string().replace("\n", "\\n"),
-                                                        )?,
+                                                        Err(err) => {
+                                                            writeln!(
+                                                                stream.get_mut(),
+                                                                "run error_invalid_config: {}",
+                                                                err.len()
+                                                            )?;
+                                                            for err in err {
+                                                                let text = err.to_string();
+                                                                let lines: Vec<_> =
+                                                                    text.lines().collect();
+                                                                writeln!(
+                                                                    stream.get_mut(),
+                                                                    "{}",
+                                                                    lines.len()
+                                                                )?;
+                                                                for line in lines {
+                                                                    writeln!(
+                                                                        stream.get_mut(),
+                                                                        "{}",
+                                                                        line
+                                                                    )?;
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                                 Ok(true) => {
@@ -404,7 +486,7 @@ fn main() {
                     line.clear();
                 }
                 eprintln!("[INFO] disconnected [{id}].");
-                Ok::<u32, std::io::Error>(id)
+                Ok::<_, std::io::Error>(id)
             });
         }
     }
