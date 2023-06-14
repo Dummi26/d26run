@@ -72,7 +72,7 @@ pub fn init() -> Config {
             run_cmds
         } else {
             eprintln!(
-                "Warn: couldn't read directory '{DIR_CONFIGS}', so no configs will be loaded!"
+                "[WARN] couldn't read directory '{DIR_CONFIGS}', so no configs will be loaded!"
             );
             HashMap::new()
         },
