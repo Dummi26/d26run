@@ -117,7 +117,6 @@ impl Con {
         self.id = self.read_line().parse().unwrap();
         self.client_dir = format!("/tmp/d26run-client-{}/", self.id);
         eprintln!("{} -> {}", self.id, self.client_dir);
-        fs::create_dir(&self.client_dir).unwrap();
     }
     /// write
     fn w(&self) -> std::sync::MutexGuard<BufReader<UnixStream>> {
@@ -170,7 +169,10 @@ impl Con {
         // wait until auth is ready
         assert_eq!("auth wait", self.read_line().as_str());
         // authenticate (via file permissions)
-        fs::remove_file(format!("{}auth", self.client_dir).as_str()).unwrap();
+        let auth_file = format!("{}auth", self.client_dir);
+        if fs::remove_file(&auth_file).is_err() {
+            panic!("No permission to remove auth file {auth_file}");
+        }
         writeln!(self.w().get_mut(), "auth done").unwrap();
         // wait for confirmation
         assert_eq!("auth accept", self.read_line().as_str());
@@ -248,12 +250,5 @@ impl Con {
                 .shutdown(std::net::Shutdown::Both)
                 .unwrap();
         });
-    }
-}
-impl Drop for Con {
-    fn drop(&mut self) {
-        if let Err(e) = fs::remove_dir_all(&self.client_dir) {
-            eprintln!("[WARN] Error removing d26run-client-dir - this isn't problematic, but might clutter your /tmp/:\n    {e:?}");
-        }
     }
 }
