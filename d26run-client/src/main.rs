@@ -186,17 +186,10 @@ impl Con {
         // wait until auth is ready
         assert_eq!("auth wait", self.read_line().as_str());
         // authenticate (via file permissions)
-<<<<<<< HEAD
-        let auth_file = format!("{}auth", self.client_dir);
-        if fs::remove_file(&auth_file).is_err() {
-            panic!("No permission to remove auth file {auth_file}");
-        }
-=======
         match fs::remove_file(format!("{}auth", self.client_dir).as_str()) {
             Ok(_) => (),
             Err(e) => return Err(ConRunErr::FailedToRemoveFileForAuth(e)),
         };
->>>>>>> 5d0aa810feada6bf122446beda8710e165944af4
         writeln!(self.w().get_mut(), "auth done").unwrap();
         // wait for confirmation
         assert_eq!("auth accept", self.read_line().as_str());
