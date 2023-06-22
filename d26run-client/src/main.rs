@@ -52,16 +52,16 @@ fn main() {
     if let Some(cmd) = args.get(0) {
         let cmd = cmd.as_str();
         match cmd {
-            "run" => Con::init(socket).run(
+            "run" => Con::init(socket).unwrap().run(
                 args.get(1)
                     .expect("run requires a second argument")
                     .as_str(),
                 args.iter().skip(2).filter_map(|v| v.split_once('=')),
                 mode,
-            ),
-            "reload" => Con::init(socket).reload_configs(),
+            ).unwrap(),
+            "reload" => Con::init(socket).unwrap().reload_configs(),
             "list" => {
-                let cfgs = Con::init(socket).list();
+                let cfgs = Con::init(socket).unwrap().list();
                 println!("configs: {}", cfgs.len());
                 for cfg in cfgs {
                     println!("{} ({})", cfg.0, cfg.1);
@@ -74,6 +74,7 @@ fn main() {
             "d26run-client tldr:
     run <name> => run a config if permissions are sufficient (/etc/d26run/configs/<name>)
     reload => request that the server reloads all configurations. might not have an effect immedeately (rate limit)
+    list => lists all available configs that can be used with 'run'.
 "
         )
     }
@@ -84,6 +85,15 @@ pub enum RunMode {
     Wait,
     ForwardOutput,
     ForwardInputOutput,
+}
+
+#[derive(Debug)]
+pub enum ConInitErr {
+    CouldNotConnectToSocket(std::io::Error),
+}
+#[derive(Debug)]
+pub enum ConRunErr {
+    FailedToRemoveFileForAuth(std::io::Error),
 }
 
 impl Display for RunMode {
@@ -103,20 +113,29 @@ pub struct Con {
     client_dir: String,
 }
 impl Con {
-    pub fn init<P: AsRef<Path>>(addr: P) -> Self {
-        let stream = std::os::unix::net::UnixStream::connect(addr).unwrap();
+    pub fn init<P: AsRef<Path>>(addr: P) -> Result<Self, ConInitErr> {
+        let stream = match std::os::unix::net::UnixStream::connect(addr) {
+            Ok(v) => v,
+            Err(e) => return Err(
+                ConInitErr::CouldNotConnectToSocket(e),
+            ),
+        };
         let mut o = Self {
             stream: Arc::new(Mutex::new(BufReader::new(stream))),
             id: 0,
             client_dir: String::new(),
         };
         o.init_();
-        o
+        Ok(o)
     }
     fn init_(&mut self) {
         self.id = self.read_line().parse().unwrap();
         self.client_dir = format!("/tmp/d26run-client-{}/", self.id);
         eprintln!("{} -> {}", self.id, self.client_dir);
+<<<<<<< HEAD
+=======
+        fs::create_dir(&self.client_dir).expect("failed: can't create client dir.");
+>>>>>>> 5d0aa810feada6bf122446beda8710e165944af4
     }
     /// write
     fn w(&self) -> std::sync::MutexGuard<BufReader<UnixStream>> {
@@ -138,7 +157,7 @@ impl Con {
         let count = response["listing configs; count: ".len()..]
             .trim()
             .parse()
-            .unwrap();
+            .expect("failed: list-configs: server returned count that couldn't be parsed to an int...");
         let mut o = Vec::with_capacity(count);
         for _ in 0..count {
             o.push((self.read_line(), self.read_line()));
@@ -151,6 +170,7 @@ impl Con {
         assert_eq!("reload-configs requested", self.read_line().as_str());
     }
     pub fn run<'a, V>(&mut self, config: &'a str, vars: V, mode: Option<RunMode>)
+    -> Result<(), ConRunErr>
     where
         V: Iterator<Item = (&'a str, &'a str)>,
     {
@@ -169,10 +189,17 @@ impl Con {
         // wait until auth is ready
         assert_eq!("auth wait", self.read_line().as_str());
         // authenticate (via file permissions)
+<<<<<<< HEAD
         let auth_file = format!("{}auth", self.client_dir);
         if fs::remove_file(&auth_file).is_err() {
             panic!("No permission to remove auth file {auth_file}");
         }
+=======
+        match fs::remove_file(format!("{}auth", self.client_dir).as_str()) {
+            Ok(_) => (),
+            Err(e) => return Err(ConRunErr::FailedToRemoveFileForAuth(e)),
+        };
+>>>>>>> 5d0aa810feada6bf122446beda8710e165944af4
         writeln!(self.w().get_mut(), "auth done").unwrap();
         // wait for confirmation
         assert_eq!("auth accept", self.read_line().as_str());
@@ -184,7 +211,7 @@ impl Con {
                     let err_count = err["run error_invalid_config: ".len()..]
                         .trim()
                         .parse()
-                        .unwrap();
+                        .expect("failed: error_invalid_config: server returned count that couldn't be parsed to an int...");
                     for i in 0..err_count {
                         let err_len = self.read_line().parse().unwrap();
                         for _ in 0..err_len {
@@ -250,5 +277,6 @@ impl Con {
                 .shutdown(std::net::Shutdown::Both)
                 .unwrap();
         });
+        Ok(())
     }
 }
