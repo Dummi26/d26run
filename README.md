@@ -1,4 +1,74 @@
-# What
+# d26run
+
+d26run is a system that lets you run commands (programs) as other user accounts.
+
+It consists of two executables:
+d26run-server, which runs as a system service (as root),
+and d26run-client, which communicates with the server to spawn certain commands.
+
+Which commands can be spawned (and by who - although this doesn't work properly yet)
+must be configured in /etc/d26run/:
+
+- /etc/d26run/configs/
+  + contains utf-8 text files
+  + d26run-client run <name> refers to the configuration file /etc/d26run/configs/<name>
+  + defines which command should be run, which user should be used to run that command, which groups the user belongs to, ...
+  + can also define prep and clean commands which will run as root before/after the main command.
+- /etc/d26run/allow/
+  + will likely change, since this doesn't seem to work on most systems :(
+  + to make it work, just add an empty file called "anyone" to this directory and chmod it to 777:
+    + `touch /etc/d26run/allow/anyone`
+    + `chmod 777 /etc/d26run/allow/anyone`
+  + contains empty files
+  + to authorize a d26run-client, that client must have permission to rm the file
+    + the file will be copied to a location in /tmp/some_dir. if the client fails to remove the file, its request will be denied
+    + because of the way /tmp works on most systems, the client can rm files in /tmp/some_dir even if the file has no write permissions set
+    + -> currently, any client will be authorized, always.
+
+## Quick setup
+
+as root, run
+
+    mkdir /etc/d26run/
+    mkdir /etc/d26run/configs/
+    mkdir /etc/d26run/allow/
+    touch /etc/d26run/allow/anyone
+    chmod 777 /etc/d26run/allow/anyone
+    useradd d26r_temp
+    # requires TERM env var
+    echo -e "allow anyone\n\nvar display from-input-or DISPLAY :0\n\nenv+set DISPLAY=display\n\nuser d26r_temp\ngroup d26r_temp\ng+group audio\n\ncommand $TERM" > /etc/d26run/configs/temp_term
+    d26run-server
+
+as your normal user, run
+
+    # allow other users to use your X display
+    xhost +
+    # ask the server to start firefox as the new user you created earlier
+    d26run-client run temp_term
+
+This should cause a terminal to open on your screen,
+runnings as the d26r_temp user and unable to access your normal user's home directory,
+unable to use sudo, etc.
+
+This is in an early testing phase - it's usable,
+but not exactly good or high-quality.
+
+Once everything becomes more solid and things are less likely to change,
+more documentation will be added.
+
+For now, what follows is the documentation for the previous version of this,
+which automates the adding/removing of temporary users
+but doesn't use a server/client system, rather requiring doas configured as nopass for your main user.
+
+The main downsides of this are
+
+- doas must be configured to work as nopass - that's pretty bad
+- temporary users can't spawn more temporary users, since they shouldn't have root access
+
+These issues should be addressed by the d26run-server + d26run-client combination,
+but feel free to use d26run alone for temporary instances of apps.
+
+# What [OLD - SHOULD BE REPLACED AT SOME POINT]
 
 d26run creates a new temporary user, configures it, and then runs a command as that user.
 Basically:

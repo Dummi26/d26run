@@ -1,0 +1,7 @@
+currently working on:
+
+- d26run-client forwarding stdin to the server
+
+want to add in the future:
+
+- d26run-client forwarding signals to the server (SIGINT, SIGUSR1/2, ... -> Ctr+C works)
