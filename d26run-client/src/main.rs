@@ -132,10 +132,7 @@ impl Con {
         self.id = self.read_line().parse().unwrap();
         self.client_dir = format!("/tmp/d26run-client-{}/", self.id);
         eprintln!("{} -> {}", self.id, self.client_dir);
-<<<<<<< HEAD
-=======
         fs::create_dir(&self.client_dir).expect("failed: can't create client dir.");
->>>>>>> 5d0aa810feada6bf122446beda8710e165944af4
     }
     /// write
     fn w(&self) -> std::sync::MutexGuard<BufReader<UnixStream>> {
