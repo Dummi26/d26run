@@ -151,7 +151,8 @@ fn handle_con_internal(
                             fs::File::create(&auth_file)?;
                             std::io::Result::Ok(())
                         };
-                        if let Ok(()) = ok() {
+                        let init_client_dir = ok();
+                        if init_client_dir.is_ok() {
                             writeln!(stream.get_mut(), "auth wait")?;
                             if stream.line().as_str() == "auth done" {
                                 match fs::try_exists(&auth_file) {
@@ -350,6 +351,7 @@ fn handle_con_internal(
                                 writeln!(stream.get_mut(), "unexpected_response auth done")?;
                             }
                         } else {
+                            eprintln!("could_not_copy_auth_file: {:?}", init_client_dir);
                             writeln!(stream.get_mut(), "auth fail could_not_copy_auth_file")?;
                         }
                     } else {
