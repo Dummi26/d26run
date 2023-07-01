@@ -1,0 +1,11 @@
+allow anyone
+
+config _temp
+config _gui
+
+var OPEN from-input-or OPEN google.com
+
+command firefox
+arg OPEN
+
+env+set MOZ_USE_XINPUT2=1

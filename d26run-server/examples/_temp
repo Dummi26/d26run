@@ -1,0 +1,35 @@
+var TMPHOME set /tmp/d26run-temphome
+var CON-ID con-id
+
+cmd-prep
+user root
+group root
+command mkdir
+arg -p
+arg TMPHOME
+end
+
+cmd-prep
+user root
+user root
+command /usr/sbin/useradd
+arg --base-dir
+arg TMPHOME
+arg --create-home
+arg --user-group
+arg --groups
+arg audio
+arg d26r_tempCON-ID
+end
+
+user d26r_tempCON-ID
+group d26r_tempCON-ID
+
+cmd-clean
+user root
+group root
+command /usr/sbin/userdel
+arg --force
+arg --remove
+arg d26r_tempCON-ID
+end

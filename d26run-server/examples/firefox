@@ -1,0 +1,10 @@
+allow anyone
+
+config _gui
+
+env+set HOME=/markone/d26run/home/firefox
+
+user d26r_firefox
+group d26r_firefox
+
+command firefox

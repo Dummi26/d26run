@@ -1,0 +1,6 @@
+starts normal firefox
+d26run-client run firefox DISPLAY=$DISPLAY
+creates a new user and starts firefox as that user (start fresh: no config, no addons, nothing)
+d26run-client run temp_firefox DISPLAY=$DISPLAY
+same thing, but open a certain website
+d26run-client run temp_firefox DISPLAY=$DISPLAY OPEN=mywebsite.com
