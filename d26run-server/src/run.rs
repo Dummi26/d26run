@@ -18,11 +18,35 @@ pub struct RunCmd {
     // pub chroot: Option<String>,
     pub command_clean: Vec<Self>,
 }
+impl std::fmt::Display for RunCmd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "command {}", self.command)?;
+        for a in &self.args {
+            writeln!(f, "arg {a}")?;
+        }
+        writeln!(f, "user {}", self.user)?;
+        writeln!(f, "group {}", self.group)?;
+        for g in &self.groups {
+            writeln!(f, "g+group {g}")?;
+        }
+        for (n, v) in &self.env {
+            match v {
+                Ok(s) => writeln!(f, "env+set {n}={}", s.to_string_lossy())?,
+                Err(None) => writeln!(f, "env+inherit {n}")?,
+                Err(Some(v)) => writeln!(f, "env+inherit {n}={v}")?,
+            }
+        }
+        if let Some(wd) = &self.working_dir {
+            writeln!(f, "working-dir {wd}")?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Default, Debug)]
 pub struct RunCmdBuilder {
     // vars
-    pub vars: HashMap<String, VarValue>,
+    pub vars: Vec<(String, VarValue)>,
     // access
     pub allow: Option<String>,
     // prep and clean (runs before/after command)
@@ -137,7 +161,7 @@ impl RunCmdBuilder {
     }
     fn to_runcmd_(
         &self,
-        vars: &HashMap<String, String>,
+        input_vars: &HashMap<String, String>,
         existing_vars: Option<&Vec<(String, String)>>,
         info: &ToRunCmdInfo,
         es: &mut Vec<ToRunCmdError>,
@@ -157,12 +181,13 @@ impl RunCmdBuilder {
         }
         fn map_var_fn(
             v: (&String, &VarValue),
-            vars: &HashMap<String, String>,
+            input_vars: &HashMap<String, String>,
             info: &ToRunCmdInfo,
+            vars: &Vec<(String, String)>,
         ) -> Result<String, ToRunCmdError> {
             let (key, value) = v;
             Ok(match value {
-                VarValue::Val(v) => v.to_owned(),
+                VarValue::Val(v) => replace_variables_in_str_given_vars(v, vars),
                 VarValue::OutputOf(exec, args) => {
                     let mut cmd = Command::new(exec);
                     cmd.args(args);
@@ -173,40 +198,40 @@ impl RunCmdBuilder {
                     }
                 }
                 VarValue::Input(arg_name) => {
-                    if let Some(val) = vars.get(arg_name) {
+                    if let Some(val) = input_vars.get(arg_name) {
                         val.to_owned()
                     } else {
                         return Err(ToRunCmdError::VarMissingInput(arg_name.to_owned()));
                     }
                 }
                 VarValue::InputOrDefault(arg_name, default) => {
-                    if let Some(val) = vars.get(arg_name) {
+                    if let Some(val) = input_vars.get(arg_name) {
                         val.to_owned()
                     } else {
-                        map_var_fn((key, default), vars, info)?
+                        map_var_fn((key, default), input_vars, info, vars)?
                     }
                 }
                 VarValue::ConId => format!("{}", info.con_id),
             })
         }
         let mut vars_all: Vec<(String, String)> = {
-            let mut vars_all = Vec::with_capacity(self.vars.len());
+            let mut vars_all = existing_vars.cloned().unwrap_or_else(|| vec![]);
             vars_all.reserve(self.vars.len());
-            if let Some(v) = existing_vars {
-                for (name, val) in v {
-                    if !self.vars.contains_key(name) {
-                        vars_all.push((name.to_owned(), val.to_owned()))
-                    }
+            for (var, val) in self.vars.iter() {
+                let v = map_var_fn((var, val), input_vars, info, &vars_all);
+                if let Some(i) = vars_all.iter().position(|(n, _)| n == var) {
+                    vars_all.remove(i);
                 }
-            }
-            for var in self.vars.iter() {
-                vars_all.push((var.0.to_owned(), erd(map_var_fn(var, vars, info), es)));
+                vars_all.push((var.to_owned(), erd(v, es)));
             }
             vars_all
         };
         vars_all.sort_by(|(a, _), (b, _)| a.cmp(b));
         // makes variables work in this string
-        let f = |val: &String| {
+        fn replace_variables_in_str_given_vars(
+            val: &str,
+            vars_all: &Vec<(String, String)>,
+        ) -> String {
             let mut out = String::new();
             let mut vars_local: Vec<(Vec<char>, _, usize, usize)> = vars_all
                 .iter()
@@ -240,10 +265,12 @@ impl RunCmdBuilder {
                 }
             }
             out
-        };
+        }
+        let replace_variables_in_str =
+            |val: &str| replace_variables_in_str_given_vars(val, &vars_all);
         if !just_check {
             for cmd in &self.command_prep {
-                match cmd.to_runcmd_with_existing_vars(vars, info, &vars_all) {
+                match cmd.to_runcmd_with_existing_vars(input_vars, info, &vars_all) {
                     Ok(v) => Runner::new_prep_or_clean(v).start().wait(),
                     Err(e) => {
                         es.extend(e);
@@ -256,11 +283,15 @@ impl RunCmdBuilder {
             command: erd(
                 self.command
                     .as_ref()
-                    .map(f)
+                    .map(|v| replace_variables_in_str(v))
                     .ok_or_else(|| ToRunCmdError::MissingFieldCommand),
                 es,
             ),
-            args: self.args.iter().map(f).collect(),
+            args: self
+                .args
+                .iter()
+                .map(|v| replace_variables_in_str(v))
+                .collect(),
             user: match er(
                 self.user
                     .clone()
@@ -270,7 +301,7 @@ impl RunCmdBuilder {
             ) {
                 Ok(id) => id,
                 Err(name) => {
-                    let name = f(&name);
+                    let name = replace_variables_in_str(&name);
                     erd(
                         match users::get_user_by_name(&name) {
                             Some(user) => Ok(user.uid()),
@@ -289,7 +320,7 @@ impl RunCmdBuilder {
             ) {
                 Ok(id) => id,
                 Err(name) => {
-                    let name = f(&name);
+                    let name = replace_variables_in_str(&name);
                     erd(
                         match users::get_group_by_name(&name) {
                             Some(group) => Ok(group.gid()),
@@ -305,7 +336,7 @@ impl RunCmdBuilder {
                     o.push(match group {
                         Ok(v) => *v,
                         Err(name) => {
-                            let name = f(name);
+                            let name = replace_variables_in_str(name);
                             erd(
                                 match users::get_group_by_name(&name) {
                                     Some(group) => Ok(group.gid()),
@@ -323,21 +354,24 @@ impl RunCmdBuilder {
                 .iter()
                 .map(|(name, val)| {
                     (
-                        f(name),
+                        replace_variables_in_str(name),
                         match val {
-                            Ok(val) => Ok(f(val).into()),
+                            Ok(val) => Ok(replace_variables_in_str(val).into()),
                             Err(None) => Err(None),
-                            Err(Some(def)) => Err(Some(f(def))),
+                            Err(Some(def)) => Err(Some(replace_variables_in_str(def))),
                         },
                     )
                 })
                 .collect(),
-            working_dir: self.working_dir.as_ref().map(f),
+            working_dir: self
+                .working_dir
+                .as_ref()
+                .map(|v| replace_variables_in_str(v)),
             command_clean: self
                 .command_clean
                 .iter()
                 .filter_map(
-                    |v| match v.to_runcmd_with_existing_vars(vars, info, &vars_all) {
+                    |v| match v.to_runcmd_with_existing_vars(input_vars, info, &vars_all) {
                         Ok(v) => Some(v),
                         Err(e) => {
                             es.extend(e);

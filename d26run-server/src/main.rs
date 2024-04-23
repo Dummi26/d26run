@@ -1,21 +1,17 @@
 #![feature(setgroups)]
 #![feature(fs_try_exists)]
-#![feature(unix_chown)]
 
-use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::os::linux::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::AtomicBool;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{
     fs,
     io::{BufRead, BufReader},
 };
 
-use crate::run::{Runner, ToRunCmdInfo};
+use crate::run::ToRunCmdInfo;
 
 mod config;
 mod run;
@@ -32,7 +28,36 @@ fn main() {
         loop {
             if let Some(arg) = args.next() {
                 match arg.as_str() {
+                    "--help" => {
+                        eprintln!("Args:\n--test-mode\n--test-config path/to/config [VAR=VALUE ...]\n--socket-path path/for/socket");
+                        return;
+                    }
                     "--test-mode" => test_mode = true,
+                    "--test-config" => {
+                        let file = args.next().expect("--test-config must be followed by the path to a config (and optionally some input variables in the format VAR=VALUE)");
+                        let vars = args.map(|v| v.split_once('=').map(|(a, b)| (a.to_owned(), b.to_owned()))).collect::<Option<_>>().expect("All additional arguments after --test-config must be in the format VAR=VALUE");
+                        eprintln!("Testing '{file}'...");
+                        let mut config = run::RunCmdBuilder::default();
+                        if let Err(e) = config::runcmd_from_abs_file(&file, &mut config) {
+                            eprintln!("{e}");
+                        }
+                        match config.to_runcmd_check(&vars, &ToRunCmdInfo {
+                            con_id: 42,
+                        }) {
+                            Ok(cmd) => {
+                                eprintln!("=== OK ===\n{}", cmd);
+                            }
+                            Err(e) => {
+                                if e.is_empty() {
+                                    panic!("Empty error list");
+                                }
+                                for e in e {
+                                    eprintln!("{e}");
+                                }
+                            }
+                        }
+                        return;
+                    },
                     "--socket-path" => {
                         socket_path = args
                             .next()
@@ -82,7 +107,7 @@ fn main() {
     socket_permissions.set_mode(0o666);
     fs::set_permissions(&socket_path, socket_permissions).unwrap();
     // accept connections
-    let mut current_id = 0u128;
+    let mut current_id: u128 = 0;
     let mut config = Arc::new(config::init());
     let mut last_reload = Instant::now();
     let please_reload = Arc::new(AtomicBool::new(false));

@@ -8,8 +8,6 @@ use crate::{
 pub struct Config {
     /// a set of configs loaded from DIR_CONFIGS
     pub run_cmds: HashMap<String, RunCmdBuilder>,
-    /// maps a regex (file path) to a run_cmds config that will be used to open the file.
-    pub open_cmds: HashMap<String, String>,
 }
 pub fn init() -> Config {
     Config {
@@ -24,7 +22,7 @@ pub fn init() -> Config {
                             if let Some(name) = file_name.to_str() {
                                 eprintln!("[INFO] Now parsing {name}.");
                                 let mut runcmd = RunCmdBuilder::default();
-                                if let Err(err) = runcmd_from_file(name, &mut runcmd) {
+                                if let Err(err) = runcmd_from_rel_file(name, &mut runcmd) {
                                     eprintln!(
                                         "[WARN] Skipping file '{}' due to parse error: {err:?}",
                                         name
@@ -76,16 +74,24 @@ pub fn init() -> Config {
             );
             HashMap::new()
         },
-        open_cmds: HashMap::new(),
     }
 }
 
-pub fn runcmd_from_file(name: &str, config: &mut RunCmdBuilder) -> Result<(), ConfigFromFileError> {
+pub fn runcmd_from_rel_file(
+    name: &str,
+    config: &mut RunCmdBuilder,
+) -> Result<(), ConfigFromFileError> {
     let file = std::fs::read_to_string(format!("{DIR_CONFIGS}{name}"))?;
-    runcmd_from_lines(name, config, &mut file.lines().map(|v| v.to_owned()))
+    runcmd_from_lines(config, &mut file.lines().map(|v| v.to_owned()))
+}
+pub fn runcmd_from_abs_file(
+    path: &impl AsRef<std::path::Path>,
+    config: &mut RunCmdBuilder,
+) -> Result<(), ConfigFromFileError> {
+    let file = std::fs::read_to_string(path)?;
+    runcmd_from_lines(config, &mut file.lines().map(|v| v.to_owned()))
 }
 pub fn runcmd_from_lines<L: Iterator<Item = String>>(
-    name: &str,
     config: &mut RunCmdBuilder,
     lines: &mut L,
 ) -> Result<(), ConfigFromFileError> {
@@ -105,7 +111,7 @@ pub fn runcmd_from_lines<L: Iterator<Item = String>>(
             s if s.is_empty() || s.starts_with('#') || s.starts_with("//") => (),
             "end" => break,
             "config" => {
-                runcmd_from_file(right, config)?;
+                runcmd_from_rel_file(right, config)?;
             }
             "var" => {
                 if let Some((name, value)) = right.split_once(' ') {
@@ -162,7 +168,8 @@ pub fn runcmd_from_lines<L: Iterator<Item = String>>(
                         }
                     }
                     if let Some(val) = get_var_val(name, value) {
-                        config.vars.insert(name.to_owned(), val);
+                        // create variable
+                        config.vars.push((name.to_owned(), val));
                     }
                 } else {
                     eprintln!("[WARN] Ignoring bare 'var' statement.");
@@ -171,12 +178,12 @@ pub fn runcmd_from_lines<L: Iterator<Item = String>>(
             "allow" => config.allow = Some(right.to_owned()),
             "cmd-prep" => config.command_prep.push({
                 let mut cfg = RunCmdBuilder::default();
-                runcmd_from_lines(&format!("{name}/prep"), &mut cfg, lines)?;
+                runcmd_from_lines(&mut cfg, lines)?;
                 cfg
             }),
             "cmd-clean" => config.command_clean.push({
                 let mut cfg = RunCmdBuilder::default();
-                runcmd_from_lines(&format!("{name}/prep"), &mut cfg, lines)?;
+                runcmd_from_lines(&mut cfg, lines)?;
                 cfg
             }),
             "command" => config.command = Some(right.to_owned()),
@@ -211,7 +218,7 @@ pub fn runcmd_from_lines<L: Iterator<Item = String>>(
                 .push(if let Some((name, value)) = right.split_once("=") {
                     (name.into(), Ok(value.into()))
                 } else {
-                    return Err(ConfigFromFileError::EnvAddWrongSyntax(right.to_owned()));
+                    return Err(ConfigFromFileError::EnvSetWrongSyntax(right.to_owned()));
                 }),
             "env+inherit" => {
                 if let Some((right, default)) = right.split_once("=") {
@@ -232,7 +239,17 @@ pub enum ConfigFromFileError {
     IoError(std::io::Error),
     UnknownStatement(String),
     CouldNotParseId(String),
-    EnvAddWrongSyntax(String),
+    EnvSetWrongSyntax(String),
+}
+impl std::fmt::Display for ConfigFromFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IoError(e) => write!(f, "IoError: {e}"),
+            Self::UnknownStatement(e) => write!(f, "Unknown Statement: '{e}'"),
+            Self::CouldNotParseId(e) => write!(f, "Could not parse ID: '{e}'"),
+            Self::EnvSetWrongSyntax(e) => write!(f, "env+set: wrong syntax: '{e}'"),
+        }
+    }
 }
 impl From<std::io::Error> for ConfigFromFileError {
     fn from(value: std::io::Error) -> Self {

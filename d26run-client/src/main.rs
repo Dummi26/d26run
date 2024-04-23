@@ -52,13 +52,16 @@ fn main() {
     if let Some(cmd) = args.get(0) {
         let cmd = cmd.as_str();
         match cmd {
-            "run" => Con::init(socket).unwrap().run(
-                args.get(1)
-                    .expect("run requires a second argument")
-                    .as_str(),
-                args.iter().skip(2).filter_map(|v| v.split_once('=')),
-                mode,
-            ).unwrap(),
+            "run" => Con::init(socket)
+                .unwrap()
+                .run(
+                    args.get(1)
+                        .expect("run requires a second argument")
+                        .as_str(),
+                    args.iter().skip(2).filter_map(|v| v.split_once('=')),
+                    mode,
+                )
+                .unwrap(),
             "reload" => Con::init(socket).unwrap().reload_configs(),
             "list" => {
                 let cfgs = Con::init(socket).unwrap().list();
@@ -93,7 +96,7 @@ pub enum ConInitErr {
 }
 #[derive(Debug)]
 pub enum ConRunErr {
-    FailedToRemoveFileForAuth(std::io::Error),
+    FailedToEditFileForAuth(String, std::io::Error),
 }
 
 impl Display for RunMode {
@@ -116,9 +119,7 @@ impl Con {
     pub fn init<P: AsRef<Path>>(addr: P) -> Result<Self, ConInitErr> {
         let stream = match std::os::unix::net::UnixStream::connect(addr) {
             Ok(v) => v,
-            Err(e) => return Err(
-                ConInitErr::CouldNotConnectToSocket(e),
-            ),
+            Err(e) => return Err(ConInitErr::CouldNotConnectToSocket(e)),
         };
         let mut o = Self {
             stream: Arc::new(Mutex::new(BufReader::new(stream))),
@@ -154,7 +155,9 @@ impl Con {
         let count = response["listing configs; count: ".len()..]
             .trim()
             .parse()
-            .expect("failed: list-configs: server returned count that couldn't be parsed to an int...");
+            .expect(
+                "failed: list-configs: server returned count that couldn't be parsed to an int...",
+            );
         let mut o = Vec::with_capacity(count);
         for _ in 0..count {
             o.push((self.read_line(), self.read_line()));
@@ -166,8 +169,12 @@ impl Con {
         writeln!(self.w().get_mut(), "reload-configs").unwrap();
         assert_eq!("reload-configs requested", self.read_line().as_str());
     }
-    pub fn run<'a, V>(&mut self, config: &'a str, vars: V, mode: Option<RunMode>)
-    -> Result<(), ConRunErr>
+    pub fn run<'a, V>(
+        &mut self,
+        config: &'a str,
+        vars: V,
+        mode: Option<RunMode>,
+    ) -> Result<(), ConRunErr>
     where
         V: Iterator<Item = (&'a str, &'a str)>,
     {
@@ -184,11 +191,17 @@ impl Con {
             writeln!(self.w().get_mut(), "run {config}").unwrap();
         }
         // wait until auth is ready
-        assert_eq!("auth wait", self.read_line().as_str());
+        let auth_line_start = "auth wait ";
+        let auth_line = self.read_line();
+        let auth_line = auth_line.as_str();
+        if !auth_line.starts_with(auth_line_start) {
+            panic!("expected 'auth wait <file>', got '{auth_line}'");
+        }
+        let path = &auth_line[auth_line_start.len()..];
         // authenticate (via file permissions)
-        match fs::remove_file(format!("{}auth", self.client_dir).as_str()) {
+        match fs::write(path, "auth") {
             Ok(_) => (),
-            Err(e) => return Err(ConRunErr::FailedToRemoveFileForAuth(e)),
+            Err(e) => return Err(ConRunErr::FailedToEditFileForAuth(path.to_owned(), e)),
         };
         writeln!(self.w().get_mut(), "auth done").unwrap();
         // wait for confirmation
