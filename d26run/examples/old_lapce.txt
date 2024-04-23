@@ -1,4 +1,0 @@
-# use the base config from code.txt
-config /tmp/code.txt
-# but also specify what program should be launched
-run lapce
