@@ -144,14 +144,14 @@ fn handle_con_internal(
                             if stream.line().as_str() == "auth done" {
                                 match fs::File::open(&auth_file) {
                                     Ok(file) => {
-                                        if file
+                                        let file_as_string = file
                                             .bytes()
                                             .take(5)
                                             .collect::<Result<Vec<_>, _>>()
                                             .ok()
-                                            .and_then(|b| String::from_utf8(b).ok())
-                                            .is_some_and(|v| v.trim() == "auth")
-                                        {
+                                            .and_then(|b| String::from_utf8(b).ok());
+                                        _ = fs::remove_file(&auth_file);
+                                        if file_as_string.is_some_and(|v| v.trim() == "auth") {
                                             writeln!(stream.get_mut(), "auth accept")?;
                                             let info = ToRunCmdInfo { con_id: id };
                                             match cfg.to_runcmd(&vars, &info) {
@@ -372,11 +372,14 @@ fn handle_con_internal(
                                             writeln!(stream.get_mut(), "auth deny failed")?
                                         }
                                     }
-                                    Err(e) => writeln!(
-                                        stream.get_mut(),
-                                        "auth deny error {}",
-                                        e.to_string().replace('\n', "\\n")
-                                    )?,
+                                    Err(e) => {
+                                        _ = fs::remove_file(&auth_file);
+                                        writeln!(
+                                            stream.get_mut(),
+                                            "auth deny error {}",
+                                            e.to_string().replace('\n', "\\n")
+                                        )?;
+                                    }
                                 }
                             } else {
                                 writeln!(stream.get_mut(), "unexpected_response auth done")?;
