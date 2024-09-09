@@ -99,7 +99,7 @@ useradd --home-dir "/tmp/d26run-temphome/$my_id" --create-home --user-group --gr
 
 sudo -u "d26r_temp_$my_id" -D "/tmp/d26run-temphome/$my_id" -- "$@"
 
-if userdel -r "d26r_temp_$my_id" 2>/dev/null; then              exit; else printf '.'; fi
+if userdel -r "d26r_temp_$my_id" 2>/dev/null; then              exit; else printf '\n.'; fi
 pkill -u "d26r_temp_$my_id"
 sleep 2
 if userdel -r "d26r_temp_$my_id" 2>/dev/null; then printf '\n'; exit; else printf '.'; fi
